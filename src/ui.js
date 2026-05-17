@@ -330,7 +330,7 @@ function buildAbandonedSection(list) {
         const $clr = $('<button class="mv-tbtn mv-danger-btn" style="flex:1;">🗑 一键清空</button>');
         $clr.on('click', () => {
             if (!confirm('清空所有遗弃记忆？')) return;
-            clearAbandoned(_chatId); triggerSave(); renderAll(); setStatus('✅ 已清空');
+            clearAbandoned(_chatId); triggerSave(); updateInjection(_chatId, _settings); renderAll(); setStatus('✅ 已清空');
         });
 
         const $selAll = $('<button class="mv-tbtn" style="flex:1;">全选</button>');
@@ -353,7 +353,7 @@ function buildAbandonedSection(list) {
             if (!confirm(`删除选中的 ${ids.length} 条遗弃记忆？`)) return;
             deleteMemories(_chatId, ids);
             ids.forEach(id => _selectedIds.delete(id));
-            triggerSave(); renderAll(); setStatus(`✅ 已删除 ${ids.length} 条`);
+            triggerSave(); updateInjection(_chatId, _settings); renderAll(); setStatus(`✅ 已删除 ${ids.length} 条`);
         });
 
         $btnRow.append($clr, $selAll, $selNone, $delSel);
@@ -474,7 +474,7 @@ function buildItem(entry, opts={}) {
         if (!confirm('删除此条记忆？')) return;
         deleteMemory(_chatId, entry.id);
         _selectedIds.delete(entry.id); _expandedIds.delete(entry.id);
-        triggerSave(); renderAll(); setStatus('已删除');
+        triggerSave(); updateInjection(_chatId, _settings); renderAll(); setStatus('已删除');
     });
     $item.find('.mv-btn-pin').on('click', () => {
         if (entry.pinned) {
@@ -482,12 +482,12 @@ function buildItem(entry, opts={}) {
         } else {
             pinMemory(_chatId, entry.id, null);
         }
-        triggerSave(); renderAll();
+        triggerSave(); updateInjection(_chatId, _settings); renderAll();
     });
     $item.find('.mv-btn-restore').on('click', () => {
         if (!confirm('还原此记忆的原始块到来源楼层末尾？')) return;
         const ok = restoreOneToChat(_chatId, entry.id);
-        if (ok) { triggerSave(); renderAll(); setStatus('✅ 已还原'); }
+        if (ok) { triggerSave(); updateInjection(_chatId, _settings); renderAll(); setStatus('✅ 已还原'); }
         else setStatus('⚠️ 还原失败');
     });
     $item.find('.mv-btn-locate').on('click', () => {
@@ -500,12 +500,12 @@ function buildItem(entry, opts={}) {
         const val = $(this).val().trim();
         const order = val === '' ? null : (parseFloat(val) || 0);
         updateMemory(_chatId, entry.id, { pinnedOrder: order });
-        triggerSave(); renderAll();
+        triggerSave(); updateInjection(_chatId, _settings); renderAll();
     });
-    $item.find('.mv-pin-top-btn').on('click',    () => { movePinnedTop(_chatId, entry.id);    triggerSave(); renderAll(); });
-    $item.find('.mv-pin-bottom-btn').on('click', () => { movePinnedBottom(_chatId, entry.id); triggerSave(); renderAll(); });
-    $item.find('.mv-pin-up-btn').on('click',     () => { movePinnedUp(_chatId, entry.id);     triggerSave(); renderAll(); });
-    $item.find('.mv-pin-down-btn').on('click',   () => { movePinnedDown(_chatId, entry.id);   triggerSave(); renderAll(); });
+    $item.find('.mv-pin-top-btn').on('click',    () => { movePinnedTop(_chatId, entry.id);    triggerSave(); updateInjection(_chatId, _settings); renderAll(); });
+    $item.find('.mv-pin-bottom-btn').on('click', () => { movePinnedBottom(_chatId, entry.id); triggerSave(); updateInjection(_chatId, _settings); renderAll(); });
+    $item.find('.mv-pin-up-btn').on('click',     () => { movePinnedUp(_chatId, entry.id);     triggerSave(); updateInjection(_chatId, _settings); renderAll(); });
+    $item.find('.mv-pin-down-btn').on('click',   () => { movePinnedDown(_chatId, entry.id);   triggerSave(); updateInjection(_chatId, _settings); renderAll(); });
 
     return $item;
 }
@@ -540,7 +540,7 @@ function openEditInline(entry) {
         const imp      = Math.min(1,Math.max(0,parseFloat($box.find('input[type=number]').val())||0));
         const date     = $box.find('input[type=date]').val() || entry.date;
         updateMemory(_chatId, entry.id, { content, tags, importance:imp, date });
-        triggerSave(); _expandedIds.add(entry.id); renderAll(); setStatus('✅ 已保存');
+        triggerSave(); updateInjection(_chatId, _settings); _expandedIds.add(entry.id); renderAll(); setStatus('✅ 已保存');
     });
 }
 
@@ -576,7 +576,7 @@ function bindPanelEvents() {
     $('#mv-del-sel-btn').on('click', () => {
         if (!confirm(`删除选中的 ${_selectedIds.size} 条？`)) return;
         deleteMemories(_chatId, [..._selectedIds]); _selectedIds.clear();
-        triggerSave(); renderAll(); setStatus('✅ 已批量删除');
+        triggerSave(); updateInjection(_chatId, _settings); renderAll(); setStatus('✅ 已批量删除');
     });
 
     // 合并弹窗
@@ -585,7 +585,7 @@ function bindPanelEvents() {
         const content = $('#mv-merge-content').val().trim();
         if (!content) return;
         mergeMemories(_chatId, [..._selectedIds], content);
-        _selectedIds.clear(); $('#mv-merge-modal').removeClass('mv-modal-active'); triggerSave(); renderAll(); setStatus('✅ 合并完成');
+        _selectedIds.clear(); $('#mv-merge-modal').removeClass('mv-modal-active'); triggerSave(); updateInjection(_chatId, _settings); renderAll(); setStatus('✅ 合并完成');
     });
 
     // 扫描弹窗（保留 HTML，但实际已改为 confirm()，cancel 仍可关闭以防万一）

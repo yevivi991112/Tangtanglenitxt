@@ -7,7 +7,7 @@ import { getPinnedSorted, getRecentUnpinned, loadMemories } from './memory.js';
 const INJECTION_KEY = 'memory-vault';
 
 function buildPromptText(list, settings) {
-    const { recentN = 5 } = settings;
+    const { recentN = 5, pinnedFirst = true } = settings;
 
     const pinned   = getPinnedSorted(list);
     const unpinned = getRecentUnpinned(list, recentN);
@@ -15,7 +15,11 @@ function buildPromptText(list, settings) {
 
     const wrap = (e) => `<Lenitxt>${e.content}</Lenitxt>`;
 
-    return [...pinned.map(wrap), ...recent.map(wrap)].join('\n');
+    if (pinnedFirst) {
+        return [...pinned.map(wrap), ...recent.map(wrap)].join('\n');
+    } else {
+        return [...recent.map(wrap), ...pinned.map(wrap)].join('\n');
+    }
 }
 
 function getSetExtensionPrompt() {
