@@ -1,0 +1,368 @@
+/* ================================================================
+   Memory Vault — style.css  （无拖拽，居中固定，dvh）
+   ================================================================ */
+
+.mv-panel {
+    position: fixed;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(420px, calc(100vw - 16px));
+    max-height: calc(100dvh - 16px);
+    background: #F5E6D3;
+    border: 2px solid #D2B48C;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.18);
+    z-index: 10001;
+    display: none;
+    flex-direction: column;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    overflow: hidden;
+    font-size: 13px;
+    color: #3D2B1F;
+}
+.mv-panel.mv-active { display: flex; }
+
+/* ─── 头部（无拖拽） ──────────────────────────────────── */
+.mv-header {
+    background: #D2B48C;
+    padding: 10px 12px;
+    border-radius: 10px 10px 0 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+}
+.mv-title { font-weight: 700; color: #5D4E37; font-size: 15px; }
+.mv-header-actions { display: flex; gap: 4px; }
+.mv-hbtn {
+    background: transparent; border: none; font-size: 16px; cursor: pointer;
+    padding: 6px 8px; border-radius: 4px; min-width: 40px; min-height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    color: #5D4E37; transition: background 0.2s;
+}
+.mv-hbtn:hover  { background: rgba(0,0,0,0.10); }
+.mv-hbtn:active { background: rgba(0,0,0,0.20); }
+
+/* ─── 主视图容器（flex column 铺满剩余高度） ─────────── */
+.mv-flex-col {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+    min-height: 0;
+}
+
+/* ─── 工具栏 ──────────────────────────────────────────── */
+.mv-toolbar {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 12px; background: #EDD9BC;
+    border-bottom: 1px solid #D2B48C; flex-shrink: 0; flex-wrap: wrap;
+}
+.mv-label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #5D4E37; white-space: nowrap; }
+.mv-multibar {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 12px; background: #F0DCC5;
+    border-bottom: 1px solid #D2B48C; flex-shrink: 0; flex-wrap: wrap;
+}
+
+/* ─── 滚动体 ──────────────────────────────────────────── */
+.mv-body {
+    overflow-y: auto; flex: 1;
+    padding: 10px 12px; -webkit-overflow-scrolling: touch;
+}
+.mv-body::-webkit-scrollbar { width: 5px; }
+.mv-body::-webkit-scrollbar-thumb { background: #D2B48C; border-radius: 3px; }
+
+/* ─── 底部状态栏 + 翻页 ───────────────────────────────── */
+.mv-footer {
+    display: flex; align-items: center; justify-content: space-between;
+    border-top: 1px solid #D2B48C; flex-shrink: 0;
+    background: #F5E6D3; padding: 2px 8px;
+}
+.mv-status {
+    font-size: 11px; color: #8B7355; flex: 1;
+}
+.mv-pager { display: flex; gap: 2px; }
+.mv-page-btn {
+    width: 28px; height: 28px; border: 1px solid #D2B48C;
+    border-radius: 4px; background: #EDD9BC; color: #5D4E37;
+    cursor: pointer; font-size: 12px; display: flex;
+    align-items: center; justify-content: center;
+    transition: background 0.15s;
+}
+.mv-page-btn:hover { background: #D2B48C; }
+.mv-page-btn:active { transform: scale(0.9); }
+
+/* ─── 设置视图 ────────────────────────────────────────── */
+.mv-settings-view {
+    overflow-y: auto; flex: 1;
+    padding: 10px 12px; -webkit-overflow-scrolling: touch;
+}
+.mv-settings-view::-webkit-scrollbar { width: 5px; }
+.mv-settings-view::-webkit-scrollbar-thumb { background: #D2B48C; border-radius: 3px; }
+
+.mv-set-section {
+    background: #FFF8E7; border: 1px solid #D2B48C;
+    border-radius: 8px; padding: 10px; margin-bottom: 8px;
+}
+.mv-set-title {
+    font-size: 11px; font-weight: 600; color: #8B7355;
+    margin-bottom: 6px; padding-bottom: 4px;
+    border-bottom: 1px dashed #D2B48C;
+}
+.mv-set-label { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #5D4E37; }
+.mv-test-result { font-size: 11px; color: #8B7355; }
+
+/* ─── 区块标题 ────────────────────────────────────────── */
+.mv-section { margin-bottom: 10px; }
+.mv-sec-title {
+    font-size: 12px; font-weight: 600; color: #8B7355;
+    padding: 4px 2px 5px; border-bottom: 1px dashed #D2B48C;
+    margin-bottom: 6px; display: flex; align-items: center; gap: 4px;
+}
+.mv-sec-collapsible { cursor: pointer; }
+.mv-sec-collapsible:hover { color: #5D4E37; }
+.mv-toggle-arrow { margin-left: auto; font-size: 10px; }
+.mv-empty-hint { text-align: center; color: #A09080; font-size: 12px; padding: 10px 0; }
+
+/* ─── 记忆条目 ────────────────────────────────────────── */
+.mv-item {
+    background: #FFF8E7; border: 1px solid #D2B48C;
+    border-radius: 8px; padding: 10px; margin-bottom: 8px;
+    transition: opacity 0.2s;
+}
+.mv-item.mv-pinned  { border-color: #C8A250; background: #FFF5D6; box-shadow: 0 0 0 1px #C8A250; }
+.mv-item.mv-muted   { opacity: 0.5; border-style: dashed; border-color: #C8B89A; background: #F5EDE0; }
+.mv-item.mv-muted:hover { opacity: 0.85; }
+
+.mv-item-top {
+    display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+    cursor: pointer;
+}
+
+/* 旧记忆分隔线 */
+.mv-old-divider {
+    text-align: center; font-size: 11px; color: #A09080;
+    padding: 6px 0; border-top: 1px dashed #D2B48C;
+    margin: 4px 0;
+}
+.mv-checkbox { width: 16px; height: 16px; flex-shrink: 0; accent-color: #C8A250; }
+.mv-floor    { font-size: 11px; color: #A07840; font-weight: 600; white-space: nowrap; }
+.mv-date     { font-size: 11px; color: #8B7355; white-space: nowrap; }
+.mv-tags     { display: flex; flex-wrap: wrap; gap: 3px; }
+.mv-tag      { background: #E8D5B0; color: #5D4E37; font-size: 10px; padding: 1px 5px; border-radius: 3px; }
+.mv-imp      { font-size: 11px; color: #A07840; font-weight: 600; }
+.mv-preview-short {
+    flex: 1; font-size: 12px; color: #5D4E37;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0;
+}
+.mv-expand-arrow {
+    background: transparent; border: none; cursor: pointer;
+    font-size: 12px; color: #8B7355; padding: 4px 6px;
+    min-height: 32px; border-radius: 4px; flex-shrink: 0;
+}
+.mv-expand-arrow:hover { background: rgba(210,180,140,0.25); }
+
+.mv-content-full {
+    margin: 8px 0; font-size: 13px; color: #3D2B1F;
+    white-space: pre-wrap; word-break: break-all; line-height: 1.5;
+    max-height: 200px; overflow-y: auto; -webkit-overflow-scrolling: touch;
+}
+
+/* ─── pinnedOrder 操作行 ──────────────────────────────── */
+.mv-order-row {
+    display: flex; align-items: center; gap: 4px;
+    margin-bottom: 6px; flex-wrap: wrap;
+}
+.mv-obtn {
+    background: #E8D5B0; border: 1px solid #D2B48C; border-radius: 4px;
+    cursor: pointer; padding: 4px 8px; font-size: 13px; color: #5D4E37;
+    min-height: 30px; transition: background 0.15s;
+}
+.mv-obtn:hover    { background: #D2B48C; }
+.mv-obtn:disabled { opacity: 0.4; cursor: default; }
+
+/* ─── 操作按钮 ────────────────────────────────────────── */
+.mv-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.mv-btn {
+    flex: 1; min-width: 52px; padding: 8px 6px; border: none; border-radius: 6px;
+    font-size: 12px; font-weight: 500; cursor: pointer; min-height: 36px;
+    touch-action: manipulation; transition: opacity 0.15s, transform 0.1s;
+}
+.mv-btn:active { transform: scale(0.95); opacity: 0.8; }
+.mv-btn-edit    { background: #87CEEB; color: #1A4A6B; }
+.mv-btn-copy    { background: #C8E6C9; color: #1B5E20; }
+.mv-btn-delete  { background: #FFCDD2; color: #B71C1C; }
+.mv-btn-pin     { background: #FFF3E0; color: #E65100; border: 1px solid #FFB74D; }
+.mv-btn-restore { background: #E8D5B0; color: #5D4E37; border: 1px solid #D2B48C; }
+.mv-btn-primary { background: #C8A250; color: white; }
+.mv-btn-cancel  { background: #A9A9A9; color: white; }
+
+/* ─── 展开/折叠旧记忆按钮 ────────────────────────────── */
+.mv-expand-btn {
+    width: 100%; padding: 10px; border: 1px dashed #D2B48C; border-radius: 8px;
+    background: transparent; color: #8B7355; font-size: 12px; cursor: pointer;
+    text-align: center; min-height: 40px; margin-bottom: 6px;
+    touch-action: manipulation; transition: background 0.2s;
+}
+.mv-expand-btn:hover { background: rgba(210,180,140,0.15); }
+
+/* ─── 工具栏/设置按钮 ─────────────────────────────────── */
+.mv-tbtn {
+    padding: 7px 12px; border: 1px solid #D2B48C; border-radius: 6px;
+    background: #EDD9BC; color: #5D4E37; font-size: 12px; cursor: pointer;
+    min-height: 34px; white-space: nowrap; transition: background 0.15s;
+    touch-action: manipulation; text-align: center;
+}
+.mv-tbtn:hover   { background: #D2B48C; }
+.mv-tbtn:active  { transform: scale(0.96); }
+.mv-danger-btn   { background: #FFCDD2; border-color: #EF9A9A; color: #B71C1C; }
+.mv-danger-btn:hover { background: #EF9A9A; }
+.mv-merge-btn    { background: #C8E6C9; border-color: #A5D6A7; color: #1B5E20; }
+
+/* ─── Tab 切换栏 ──────────────────────────────────────── */
+.mv-tab-bar {
+    display: flex; align-items: center;
+    padding: 0 12px; background: #EDD9BC;
+    border-bottom: 1px solid #D2B48C; flex-shrink: 0;
+    gap: 0;
+}
+.mv-tab {
+    flex: 1; padding: 8px 4px; border: none; background: transparent;
+    font-size: 12px; color: #8B7355; cursor: pointer;
+    border-bottom: 2px solid transparent; transition: all 0.2s;
+    min-height: 36px; text-align: center;
+}
+.mv-tab:hover { color: #5D4E37; }
+.mv-tab.mv-tab-active {
+    color: #5D4E37; font-weight: 600;
+    border-bottom-color: #C8A250;
+}
+.mv-tab-trash { flex: 0 0 auto; padding: 8px 12px; }
+.mv-tab-content {
+    max-height: 55vh; overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+/* ─── 记忆库区块 ──────────────────────────────────────── */
+.mv-vault-section {
+    border-top: 1px solid #D2B48C;
+    margin-top: 4px;
+}
+.mv-vault-header {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 4px; cursor: pointer; font-size: 12px;
+    font-weight: 600; color: #8B7355;
+}
+.mv-vault-header:hover { color: #5D4E37; }
+.mv-vault-arrow { font-size: 10px; flex-shrink: 0; }
+
+/* ─── 弹窗显隐（class 控制） ──────────────────────────── */
+.mv-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 10005;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+}
+.mv-modal.mv-modal-active { display: flex; }
+.mv-modal-box {
+    background: #F5E6D3;
+    border: 2px solid #D2B48C;
+    border-radius: 12px;
+    padding: 16px;
+    width: min(400px, calc(100vw - 24px));
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: calc(100dvh - 24px);
+    overflow-y: auto;
+    margin: 12px auto;
+    flex-shrink: 0;
+}
+.mv-modal-title  { font-weight: 700; color: #5D4E37; font-size: 14px; }
+.mv-modal-actions { display: flex; gap: 8px; margin-top: 4px; }
+.mv-modal-actions .mv-btn { min-height: 40px; }
+
+/* ─── 输入控件 ────────────────────────────────────────── */
+.mv-textarea {
+    width: 100%; min-height: 90px; max-height: 260px; border: 1px solid #D2B48C;
+    border-radius: 6px; padding: 8px; font-family: inherit; font-size: 13px;
+    color: #3D2B1F; background: #FFFEF9; resize: vertical; box-sizing: border-box;
+    -webkit-overflow-scrolling: touch;
+}
+.mv-input {
+    width: 100%; border: 1px solid #D2B48C; border-radius: 6px;
+    padding: 6px 8px; font-size: 13px; color: #3D2B1F;
+    background: #FFFEF9; box-sizing: border-box; min-height: 34px;
+}
+.mv-input:focus, .mv-textarea:focus { outline: none; border-color: #B8956A; }
+.mv-num-input {
+    width: 56px; padding: 4px 6px; border: 1px solid #D2B48C; border-radius: 4px;
+    font-size: 12px; text-align: center; background: #FFFEF9; color: #3D2B1F; min-height: 30px;
+}
+.mv-select {
+    border: 1px solid #D2B48C; border-radius: 4px; padding: 4px 6px;
+    font-size: 12px; background: #FFFEF9; color: #3D2B1F; min-height: 30px;
+}
+
+/* ─── 内联编辑框 ──────────────────────────────────────── */
+.mv-edit-box { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+
+/* ─── 扫描弹窗 ────────────────────────────────────────── */
+.mv-scan-list { max-height: calc(50dvh); overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.mv-scan-item {
+    background: #FFF8E7; border: 1px solid #D2B48C;
+    border-radius: 6px; padding: 8px;
+}
+.mv-scan-meta  { font-size: 11px; color: #8B7355; margin-bottom: 3px; }
+.mv-scan-preview {
+    font-size: 12px; color: #5D4E37; white-space: pre-wrap;
+    word-break: break-all; max-height: 60px; overflow: hidden;
+}
+
+/* ─── 预设标签 ────────────────────────────────────────── */
+.mv-preset-tag {
+    background: #E8D5B0; color: #5D4E37; border-radius: 4px;
+    padding: 2px 6px; font-size: 11px; display: inline-flex;
+    align-items: center; gap: 3px;
+}
+.mv-preset-tag-del {
+    background: transparent; border: none; cursor: pointer;
+    color: #B71C1C; font-size: 13px; line-height: 1; padding: 0;
+}
+
+/* ─── 响应式 ──────────────────────────────────────────── */
+@media (max-width: 768px) {
+    .mv-btn  { font-size: 13px; padding: 10px 6px; }
+    .mv-textarea { min-height: 70px; }
+}
+
+/* ─── 定位按钮 ────────────────────────────────────────── */
+.mv-btn-locate { background: #B3E5FC; color: #01579B; border: 1px solid #4FC3F7; }
+
+/* ─── ST 扩展抽屉设置面板 ────────────────────────────── */
+.mv-settings-wrap { padding: 8px 0; }
+.mv-set-row {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 8px;
+}
+.mv-set-group {
+    background: #FFF8E7; border: 1px solid #D2B48C;
+    border-radius: 8px; padding: 10px; margin-bottom: 10px;
+}
+.mv-set-group-title {
+    font-size: 12px; font-weight: 600; color: #8B7355;
+    margin-bottom: 8px; padding-bottom: 4px;
+    border-bottom: 1px dashed #D2B48C;
+}
+.mv-preset-tags-box {
+    display: flex; flex-wrap: wrap; gap: 5px;
+    min-height: 24px;
+}

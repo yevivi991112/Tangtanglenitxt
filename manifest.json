@@ -1,0 +1,13 @@
+{
+  "display_name": "糖🍬的记忆管理",
+  "loading_order": 5,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "settings": "settings.html",
+  "author": "you",
+  "version": "1.0.0",
+  "homePage": "",
+  "auto_update": false
+}
