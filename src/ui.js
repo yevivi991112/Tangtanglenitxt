@@ -203,6 +203,9 @@ const PANEL_HTML = `
     <div class="mv-set-section">
       <div class="mv-set-title">自动捕获</div>
       <label class="mv-set-label" style="margin-bottom:6px;">
+        <input type="checkbox" id="mv-set-scan-exclude-recent-n"> 手动扫描区块时同时排除最近N楼
+      </label>
+      <label class="mv-set-label" style="margin-bottom:6px;">
         <input type="checkbox" id="mv-set-auto-capture"> 启用自动捕获记忆
       </label>
       <div style="font-size:11px;color:#B71C1C;margin-bottom:6px;">
@@ -845,6 +848,7 @@ export function syncSettings(s) {
     $('#mv-set-recent-n').val(s.recentN);
     $('#mv-set-def-imp').val(s.defaultImportance);
     $('#mv-set-inject-format').val(s.injectFormat || 'lenitxt');
+    $('#mv-set-scan-exclude-recent-n').prop('checked', s.scanExcludeRecentN);
     $('#mv-set-auto-capture').prop('checked', s.autoCapture);
     $('#mv-set-auto-capture-n').val(s.autoCaptureExcludeN ?? 6);
     $('#mv-set-auto-clean-restore').prop('checked', s.autoCleanAfterRestore);
