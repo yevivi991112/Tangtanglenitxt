@@ -726,8 +726,12 @@ export function openScanModal() {
         if (!chat?.length) { setStatus('⚠️ 无聊天数据'); return; }
 
         const existing = loadMemories(_chatId);
+        const excludeThreshold = _settings.scanExcludeRecentN
+            ? chat.length - (_settings.autoCaptureExcludeN ?? 0)
+            : chat.length;
         const newBlocks = [];
         chat.forEach((msg, mi) => {
+            if (mi >= excludeThreshold) return;
             const re = /<Lenitxt>([\s\S]*?)<\/Lenitxt>/gi;
             let m, bi = 0;
             while ((m = re.exec(msg.mes||'')) !== null) {

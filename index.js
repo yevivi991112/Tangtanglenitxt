@@ -36,6 +36,7 @@ const DEFAULT_SETTINGS = {
     presetTags:           [],
     autoCapture:          false,
     autoCaptureExcludeN:  6,
+    scanExcludeRecentN:   false,
     injectFormat:         'lenitxt',
     autoCleanAfterRestore: false,
     chatSwitchCopy:       'empty_only', // 'never' | 'empty_only' | 'always'
@@ -244,6 +245,7 @@ function syncSettingsPanel() {
     jQuery('#mv-set-def-imp').val(settings.defaultImportance);
     jQuery('#mv-set-auto-capture').prop('checked', settings.autoCapture);
     jQuery('#mv-set-auto-capture-n').val(settings.autoCaptureExcludeN);
+    jQuery('#mv-set-scan-exclude-recent-n').prop('checked', settings.scanExcludeRecentN);
     jQuery('#mv-set-inject-format').val(settings.injectFormat);
     jQuery('#mv-fp-chat-switch-copy').val(settings.chatSwitchCopy);
     jQuery('#mv-set-auto-clean-restore').prop('checked', settings.autoCleanAfterRestore);
@@ -436,6 +438,11 @@ function bindSettingsPanel() {
             settings.autoCaptureExcludeN = n;
             savePluginSettings();
         }
+    });
+
+    doc.on('change', '#mv-set-scan-exclude-recent-n', function() {
+        settings.scanExcludeRecentN = this.checked;
+        savePluginSettings();
     });
 
     doc.on('change', '#mv-set-inject-format', function() {
