@@ -13,10 +13,15 @@ export function filterMemories(list, query, tags) {
     let result = list;
     if (query && query.trim()) {
         const q = query.trim().toLowerCase();
-        result = result.filter(e =>
-            e.content.toLowerCase().includes(q) ||
-            e.tags.some(t => t.toLowerCase().includes(q))
-        );
+        const numVal = parseFloat(q);
+        const isNumQuery = !isNaN(numVal) && numVal >= 0 && numVal <= 1;
+        result = result.filter(e => {
+            if (isNumQuery) {
+                if (Math.abs(e.importance - numVal) < 0.05) return true;
+            }
+            return e.content.toLowerCase().includes(q) ||
+                   e.tags.some(t => t.toLowerCase().includes(q));
+        });
     }
     if (tags && tags.length) {
         result = result.filter(e =>

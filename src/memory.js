@@ -119,6 +119,44 @@ export function addMemory(chatId, fields) {
     return entry;
 }
 
+export function addMemoryAtFloor(chatId, fields) {
+    const list = loadMemories(chatId);
+    const entry = {
+        id:                 genId(),
+        content:            fields.content ?? '',
+        tags:               fields.tags ?? [],
+        importance:         fields.importance ?? 0.5,
+        date:               fields.date ?? new Date().toISOString().slice(0, 10),
+        timestamp:          fields.timestamp ?? Date.now(),
+        source:             fields.source ?? 'manual',
+        pinned:             false,
+        pinnedOrder:        null,
+        linkedMessageId:    fields.linkedMessageId ?? null,
+        originalBlockIndex: fields.originalBlockIndex ?? null,
+        originalText:       fields.originalText ?? null,
+        sourceDeleted:      false,
+    };
+    const targetId = entry.linkedMessageId;
+    if (targetId === null || targetId === undefined) {
+        list.push(entry);
+    } else {
+        // 找到最后一个 linkedMessageId <= targetId 的位置，插在其后
+        let insertPos = 0;
+        for (let i = 0; i < list.length; i++) {
+            const lid = list[i].linkedMessageId;
+            if (lid !== null && lid !== undefined && lid <= targetId) {
+                insertPos = i + 1;
+            } else if (lid !== null && lid !== undefined && lid > targetId) {
+                // 遇到第一个比 targetId 大的，停止
+                break;
+            }
+        }
+        list.splice(insertPos, 0, entry);
+    }
+    saveMemories(chatId, list);
+    return entry;
+}
+
 export function updateMemory(chatId, id, patch) {
     const list = loadMemories(chatId);
     const idx = list.findIndex(e => e.id === id);
@@ -148,23 +186,28 @@ export function mergeMemories(chatId, ids, mergedContent) {
     if (sources.length < 2) return null;
     const allTags = [...new Set(sources.flatMap(s => s.tags))];
     const maxImportance = Math.max(...sources.map(s => s.importance));
+    const earliestDate = sources.reduce((min, s) => s.date < min ? s.date : min, sources[0].date);
+    const linkedIds = sources.filter(s => s.linkedMessageId !== null).map(s => s.linkedMessageId);
+    const latestLinkedId = linkedIds.length ? Math.max(...linkedIds) : null;
     const entry = {
         id:                 genId(),
         content:            mergedContent,
         tags:               allTags,
         importance:         maxImportance,
-        date:               new Date().toISOString().slice(0, 10),
+        date:               earliestDate,
         timestamp:          Date.now(),
         source:             'manual',
         pinned:             false,
         pinnedOrder:        null,
-        linkedMessageId:    null,
+        linkedMessageId:    latestLinkedId,
         originalBlockIndex: null,
         originalText:       null,
         sourceDeleted:      false,
     };
-    list.push(entry);
-    saveMemories(chatId, list);
+    const idSet = new Set(ids);
+    const filtered = list.filter(e => !idSet.has(e.id));
+    filtered.push(entry);
+    saveMemories(chatId, filtered);
     return entry;
 }
 
@@ -233,12 +276,12 @@ export function restoreOneToChat(chatId, memoryId) {
     const ctx = SillyTavern.getContext();
     const list = loadMemories(chatId);
     const entry = list.find(e => e.id === memoryId);
-    if (!entry || entry.linkedMessageId === null || !entry.originalText) return false;
+    if (!entry || entry.linkedMessageId === null) return false;
     const msg = ctx.chat?.[entry.linkedMessageId];
     if (!msg) return false;
-    msg.mes = msg.mes + '\n' + entry.originalText;
-    entry.linkedMessageId    = null;
-    entry.originalText       = null;
+    const restoreText = entry.originalText || `<Lenitxt>${entry.content}</Lenitxt>`;
+    msg.mes = msg.mes + '\n' + restoreText;
+    entry.sourceDeleted = true;
     saveMemories(chatId, list);
     return true;
 }
@@ -363,9 +406,12 @@ export function movePinnedUp(chatId, id) {
     if (idx <= 0) return;
     const prev = pinned[idx - 1];
     const cur  = pinned[idx];
-    const tmp  = cur.pinnedOrder;
-    updateMemory(chatId, id,      { pinnedOrder: prev.pinnedOrder });
-    updateMemory(chatId, prev.id, { pinnedOrder: tmp });
+    const curInList  = list.find(e => e.id === cur.id);
+    const prevInList = list.find(e => e.id === prev.id);
+    const tmp = curInList.pinnedOrder;
+    curInList.pinnedOrder  = prevInList.pinnedOrder;
+    prevInList.pinnedOrder = tmp;
+    saveMemories(chatId, list);
 }
 
 export function movePinnedDown(chatId, id) {
@@ -375,7 +421,26 @@ export function movePinnedDown(chatId, id) {
     if (idx === -1 || idx >= pinned.length - 1) return;
     const next = pinned[idx + 1];
     const cur  = pinned[idx];
-    const tmp  = cur.pinnedOrder;
-    updateMemory(chatId, id,      { pinnedOrder: next.pinnedOrder });
-    updateMemory(chatId, next.id, { pinnedOrder: tmp });
+    const curInList  = list.find(e => e.id === cur.id);
+    const nextInList = list.find(e => e.id === next.id);
+    const tmp = curInList.pinnedOrder;
+    curInList.pinnedOrder  = nextInList.pinnedOrder;
+    nextInList.pinnedOrder = tmp;
+    saveMemories(chatId, list);
+}
+
+// ─── 复制记忆到新聊天（用于分支/拷贝场景） ────────────────────────────────
+
+export function copyMemories(fromChatId, toChatId) {
+    const source = loadMemories(fromChatId);
+    if (!source.length) return 0;
+    const existing = loadMemories(toChatId);
+    if (existing.length) return 0; // 目标已有记忆，不覆盖
+    const copied = source.map(entry => ({
+        ...entry,
+        id: genId(),
+        timestamp: Date.now(),
+    }));
+    saveMemories(toChatId, copied);
+    return copied.length;
 }

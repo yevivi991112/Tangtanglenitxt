@@ -257,6 +257,12 @@
 }
 .mv-vault-header:hover { color: #5D4E37; }
 .mv-vault-arrow { font-size: 10px; flex-shrink: 0; }
+.mv-vault-hint {
+    margin-left: auto;
+    font-size: 11px;
+    font-weight: 400;
+    color: #A09080;
+}
 
 /* ─── 弹窗显隐（class 控制） ──────────────────────────── */
 .mv-modal {
@@ -365,4 +371,15 @@
 .mv-preset-tags-box {
     display: flex; flex-wrap: wrap; gap: 5px;
     min-height: 24px;
+}
+
+/* ─── 合并后条目突显动画 ─────────────────────────────── */
+@keyframes mv-highlight-flash {
+    0%   { background: #FFD54F; box-shadow: 0 0 8px rgba(255,213,79,0.6); }
+    50%  { background: #FFF8E7; box-shadow: none; }
+    100% { background: #FFD54F; box-shadow: 0 0 8px rgba(255,213,79,0.6); }
+}
+.mv-item.mv-highlight {
+    animation: mv-highlight-flash 0.6s ease-in-out 3;
+    border-color: #FFC107;
 }

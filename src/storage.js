@@ -43,6 +43,26 @@ function localWrite(key, value) {
     catch { return false; }
 }
 
+function extDelete(key) {
+    try {
+        const ctx = SillyTavern.getContext();
+        const store = ctx?.extensionSettings?.[SETTINGS_KEY];
+        if (store && Object.prototype.hasOwnProperty.call(store, key)) {
+            delete store[key];
+        }
+        return true;
+    } catch { return false; }
+}
+
+function localDelete(key) {
+    try { localStorage.removeItem('mv_' + key); return true; }
+    catch { return false; }
+}
+
+function mvDelete(key) {
+    return _backend === StorageBackend.EXT ? extDelete(key) : localDelete(key);
+}
+
 // ─── 公开 API ──────────────────────────────────────────────────────────────
 
 export function mvRead(key) {
@@ -67,7 +87,7 @@ export async function testBackend(backend) {
     const prev = _backend;
     _backend = backend;
     const ok = mvWrite(probe, 1) && mvRead(probe) === 1;
-    mvWrite(probe, undefined); // 清理
+    mvDelete(probe);
     _backend = prev;
     return ok;
 }
@@ -103,9 +123,30 @@ export function exportChat(chatId) {
 }
 
 export function importData(dump, mode) {
-    // mode: 'merge' | 'overwrite'
-    for (const [k, v] of Object.entries(dump)) {
-        if (!k.startsWith('chat_')) continue;
+    if (!dump || typeof dump !== 'object') {
+        return { success: false, error: '导入数据格式错误：不是有效的 JSON 对象' };
+    }
+
+    const chatKeys = Object.keys(dump).filter(k => k.startsWith('chat_'));
+    if (!chatKeys.length) {
+        return { success: false, error: '导入数据中未找到任何聊天记忆（需要 chat_ 开头的 key）' };
+    }
+
+    for (const k of chatKeys) {
+        const v = dump[k];
+        if (!Array.isArray(v)) {
+            return { success: false, error: `数据损坏：${k} 不是数组格式` };
+        }
+        for (let i = 0; i < v.length; i++) {
+            const entry = v[i];
+            if (!entry || typeof entry !== 'object' || !entry.id || typeof entry.content === 'undefined') {
+                return { success: false, error: `数据损坏：${k} 中第 ${i + 1} 条记忆缺少必要字段（id/content）` };
+            }
+        }
+    }
+
+    for (const k of chatKeys) {
+        const v = dump[k];
         if (mode === 'overwrite') {
             mvWrite(k, v);
         } else {
@@ -118,4 +159,5 @@ export function importData(dump, mode) {
             mvWrite(k, merged);
         }
     }
+    return { success: true, error: null };
 }

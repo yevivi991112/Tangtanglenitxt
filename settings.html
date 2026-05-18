@@ -47,6 +47,14 @@
       <input type="number" id="mv-set-recent-n" class="mv-num-input" min="0" max="999" value="5">
       <span style="font-size:11px;color:#8B7355;">(0=全发)</span>
     </div>
+    <div class="mv-set-row">
+      <label class="mv-set-label">注入格式:</label>
+      <select id="mv-set-inject-format" class="mv-select">
+        <option value="lenitxt">带 &lt;Lenitxt&gt; 标签</option>
+        <option value="plain">纯文本（日期|标签|内容）</option>
+        <option value="lenitxt_single">整合记忆（仅一次 Lenitxt 包裹）</option>
+      </select>
+    </div>
   </div>
 
   <!-- 记忆默认值 -->
@@ -87,6 +95,19 @@
       <button class="mv-tbtn" id="mv-restore-all-btn" style="width:100%;">↩ 一键还原所有记忆到来源楼层</button>
       <button class="mv-tbtn mv-danger-btn" id="mv-restore-chat-snap-btn" style="width:100%;">⚠️ 恢复聊天快照</button>
       <button class="mv-tbtn mv-danger-btn" id="mv-restore-db-snap-btn" style="width:100%;">⚠️ 恢复记忆库快照</button>
+    </div>
+  </div>
+
+  <!-- 还原行为 -->
+  <div class="mv-set-group">
+    <div class="mv-set-group-title">还原行为</div>
+    <div class="mv-set-row">
+      <label class="mv-set-label">
+        <input type="checkbox" id="mv-set-auto-clean-restore"> 还原后自动清理遗弃区备份
+      </label>
+    </div>
+    <div style="font-size:11px;color:#8B7355;margin-top:2px;">
+      关闭时还原的记忆会保留在遗弃区作为备份，需手动清理
     </div>
   </div>
 

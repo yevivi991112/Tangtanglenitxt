@@ -3,7 +3,7 @@
  */
 
 import {
-    loadMemories, saveMemories, addMemory, updateMemory, deleteMemory, deleteMemories,
+    loadMemories, saveMemories, addMemory, addMemoryAtFloor, updateMemory, deleteMemory, deleteMemories,
     mergeMemories, getPinnedSorted, getRecentUnpinned, getAbandoned,
     pinMemory, unpinMemory, clearAbandoned, restoreOneToChat,
     movePinnedTop, movePinnedBottom, movePinnedUp, movePinnedDown,
@@ -34,6 +34,7 @@ let _searchQuery   = '';
 let _view          = 'main'; // 'main' | 'settings'
 let _activeTab     = 'pinned'; // 'pinned' | 'recent' | 'abandoned'
 let _vaultCollapsed = true;
+let _highlightIds   = new Set();
 
 // ─── HTML ─────────────────────────────────────────────────────────────────
 const PANEL_HTML = `
@@ -130,6 +131,14 @@ const PANEL_HTML = `
         </label>
         <span style="font-size:11px;color:#8B7355;">(0=全发)</span>
       </div>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+        <label class="mv-set-label">注入格式:</label>
+        <select id="mv-set-inject-format" class="mv-select" style="flex:1;">
+          <option value="lenitxt">带 &lt;Lenitxt&gt; 标签</option>
+          <option value="plain">纯文本（日期|标签|内容）</option>
+          <option value="lenitxt_single">整合记忆（仅一次 Lenitxt 包裹）</option>
+        </select>
+      </div>
     </div>
 
     <div class="mv-set-section">
@@ -166,6 +175,28 @@ const PANEL_HTML = `
         <button class="mv-tbtn" id="mv-restore-all-btn" style="width:100%;">↩ 一键还原所有记忆到来源楼层</button>
         <button class="mv-tbtn mv-danger-btn" id="mv-restore-chat-snap-btn" style="width:100%;">⚠️ 恢复聊天快照</button>
         <button class="mv-tbtn mv-danger-btn" id="mv-restore-db-snap-btn" style="width:100%;">⚠️ 恢复记忆库快照</button>
+      </div>
+    </div>
+
+    <div class="mv-set-section">
+      <div class="mv-set-title">还原行为</div>
+      <label class="mv-set-label">
+        <input type="checkbox" id="mv-set-auto-clean-restore"> 还原后自动清理遗弃区备份
+      </label>
+      <div style="font-size:11px;color:#8B7355;margin-top:2px;">
+        关闭时还原的记忆会保留在遗弃区作为备份，需手动清理
+      </div>
+    </div>
+
+    <div class="mv-set-section">
+      <div class="mv-set-title">聊天切换复制记忆</div>
+      <select id="mv-fp-chat-switch-copy" class="mv-select" style="width:100%;">
+        <option value="never">从不复制</option>
+        <option value="empty_only">仅新聊天记忆为空时询问</option>
+        <option value="always">始终询问（保险机制）</option>
+      </select>
+      <div style="font-size:11px;color:#8B7355;margin-top:4px;">
+        切换聊天时是否弹出确认框，将旧聊天的记忆复制到新聊天
       </div>
     </div>
 
@@ -265,7 +296,10 @@ export function renderAll() {
     if (!_chatId || _view !== 'main') return;
     let list = loadMemories(_chatId);
     if (_searchQuery.trim()) list = filterMemories(list, _searchQuery, []);
-    const $body = $('#mv-body').empty();
+    const $body = $('#mv-body');
+    const scrollPos = $body.scrollTop();
+    const tabScrollPos = $body.find('.mv-tab-content').scrollTop() || 0;
+    $body.empty();
 
     // Tab 内容区（上半区）
     const $tabContent = $('<div class="mv-tab-content">');
@@ -282,6 +316,8 @@ export function renderAll() {
     $body.append(buildVaultSection(list));
 
     syncMultibar();
+    $body.scrollTop(scrollPos);
+    $body.find('.mv-tab-content').scrollTop(tabScrollPos);
 }
 
 // ─── 置顶区块 ─────────────────────────────────────────────────────────────
@@ -303,18 +339,13 @@ function buildPinnedSection(list) {
 function buildRecentSection(list) {
     const n        = _settings.recentN ?? 5;
     const unpinned = getRecentUnpinned(list, n);
-    const old      = n === 0 ? [] : unpinned.slice(0, Math.max(0, unpinned.length - n));
     const send     = n === 0 ? unpinned : unpinned.slice(Math.max(0, unpinned.length - n));
 
     const $sec = $('<div class="mv-section">');
-    $sec.append(`<div class="mv-sec-title">📋 最近记忆 (${unpinned.length})</div>`);
+    $sec.append(`<div class="mv-sec-title">📋 最近记忆 (${send.length})</div>`);
 
     send.forEach(e => $sec.append(buildItem(e, { section:'recent' })));
 
-    if (old.length) {
-        $sec.append('<div class="mv-old-divider">── 以下为旧记忆（不发送给AI） ──</div>');
-        old.forEach(e => $sec.append(buildItem(e, { muted:true, section:'recent' })));
-    }
     if (!unpinned.length) $sec.append('<div class="mv-empty-hint">无记忆，可手动新增或扫描聊天</div>');
     return $sec;
 }
@@ -372,11 +403,11 @@ function buildVaultSection(list) {
     const recentSend = n === 0 ? unpinned : unpinned.slice(Math.max(0, unpinned.length - n));
     const recentSendIds = new Set(recentSend.map(e => e.id));
 
-    const vaultItems = list.filter(e => !e.sourceDeleted && !recentSendIds.has(e.id));
+    const vaultItems = list.filter(e => !e.sourceDeleted && !e.pinned && !recentSendIds.has(e.id));
 
     const $sec = $('<div class="mv-vault-section">');
     const arrow = _vaultCollapsed ? '▶' : '▼';
-    const $header = $(`<div class="mv-vault-header"><span class="mv-vault-arrow">${arrow}</span> 📚 记忆库 (${vaultItems.length})</div>`);
+    const $header = $(`<div class="mv-vault-header"><span class="mv-vault-arrow">${arrow}</span> 📚 记忆库 (${vaultItems.length})<span class="mv-vault-hint">不发送AI</span></div>`);
     $header.on('click', () => {
         _vaultCollapsed = !_vaultCollapsed;
         renderAll();
@@ -387,7 +418,7 @@ function buildVaultSection(list) {
         if (!vaultItems.length) {
             $sec.append('<div class="mv-empty-hint">记忆库为空</div>');
         } else {
-            vaultItems.forEach(e => $sec.append(buildItem(e, { section: e.pinned ? 'pinned' : 'recent', muted: !e.pinned && recentSend.length > 0 })));
+            vaultItems.forEach(e => $sec.append(buildItem(e, { section: 'recent', muted: recentSend.length > 0 })));
         }
     }
     return $sec;
@@ -399,7 +430,8 @@ function buildItem(entry, opts={}) {
     const expanded   = _expandedIds.has(entry.id);
     const isSelected = _selectedIds.has(entry.id);
 
-    const $item = $(`<div class="mv-item${muted?' mv-muted':''}${entry.pinned?' mv-pinned':''}" data-id="${esc(entry.id)}">`);
+    const highlighted = _highlightIds.has(entry.id);
+    const $item = $(`<div class="mv-item${muted?' mv-muted':''}${entry.pinned?' mv-pinned':''}${highlighted?' mv-highlight':''}" data-id="${esc(entry.id)}">`);
     const tagsHtml = (entry.tags||[]).map(t=>`<span class="mv-tag">#${esc(t)}</span>`).join(' ');
 
     $item.append(`
@@ -433,7 +465,7 @@ function buildItem(entry, opts={}) {
 
         const pinLabel  = entry.pinned ? '取消置顶' : '置顶';
         const canPin    = section !== 'abandoned';
-        const canRestore = entry.linkedMessageId !== null && entry.originalText;
+        const canRestore = entry.linkedMessageId !== null && entry.content;
         const canLocate  = entry.linkedMessageId !== null && entry.linkedMessageId !== undefined;
         const $act = $(`
           <div class="mv-actions">
@@ -487,7 +519,12 @@ function buildItem(entry, opts={}) {
     $item.find('.mv-btn-restore').on('click', () => {
         if (!confirm('还原此记忆的原始块到来源楼层末尾？')) return;
         const ok = restoreOneToChat(_chatId, entry.id);
-        if (ok) { triggerSave(); updateInjection(_chatId, _settings); renderAll(); setStatus('✅ 已还原'); }
+        if (ok) {
+            if (_settings.autoCleanAfterRestore) {
+                deleteMemory(_chatId, entry.id);
+            }
+            triggerSave(); updateInjection(_chatId, _settings); renderAll(); setStatus('✅ 已还原');
+        }
         else setStatus('⚠️ 还原失败');
     });
     $item.find('.mv-btn-locate').on('click', () => {
@@ -516,15 +553,23 @@ function openEditInline(entry) {
     $item.find('.mv-content-full, .mv-actions, .mv-order-row').hide();
     if ($item.find('.mv-edit-box').length) return;
 
+    const currentFloor = entry.linkedMessageId !== null && entry.linkedMessageId !== undefined
+        ? String(entry.linkedMessageId + 1) : '';
+
     const $box = $(`
       <div class="mv-edit-box">
         <textarea class="mv-textarea">${esc(entry.content)}</textarea>
-        <input type="text" class="mv-input" placeholder="标签（逗号分隔）" value="${esc((entry.tags||[]).join(','))}">
+        <input type="text" class="mv-input mv-edit-tags-input" placeholder="标签（逗号分隔）" value="${esc((entry.tags||[]).join(','))}">
         <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
           <label style="font-size:11px;color:#5D4E37;">重要度:</label>
           <input type="number" class="mv-num-input" min="0" max="1" step="0.1" value="${entry.importance}">
           <label style="font-size:11px;color:#5D4E37;">日期:</label>
           <input type="date" class="mv-input" value="${entry.date}" style="flex:1;">
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+          <label style="font-size:11px;color:#5D4E37;">楼层序号:</label>
+          <input type="number" class="mv-num-input mv-edit-floor-input" min="1" step="1" placeholder="留空=末尾" value="${esc(currentFloor)}" style="width:80px;">
+          <span style="font-size:11px;color:#8B7355;">（留空则排在末尾）</span>
         </div>
         <div class="mv-modal-actions">
           <button class="mv-btn mv-btn-cancel">取消</button>
@@ -536,11 +581,30 @@ function openEditInline(entry) {
     $box.find('.mv-btn-cancel').on('click', () => { $box.remove(); $item.find('.mv-content-full,.mv-actions,.mv-order-row').show(); });
     $box.find('.mv-btn-primary').on('click', () => {
         const content  = $box.find('textarea').val().trim();
-        const tags     = $box.find('input[placeholder]').val().split(',').map(t=>t.trim()).filter(Boolean);
-        const imp      = Math.min(1,Math.max(0,parseFloat($box.find('input[type=number]').val())||0));
+        const tags     = $box.find('.mv-edit-tags-input').val().split(',').map(t=>t.trim()).filter(Boolean);
+        const imp      = Math.min(1,Math.max(0,parseFloat($box.find('input[type=number]').first().val())||0));
         const date     = $box.find('input[type=date]').val() || entry.date;
-        updateMemory(_chatId, entry.id, { content, tags, importance:imp, date });
-        triggerSave(); updateInjection(_chatId, _settings); _expandedIds.add(entry.id); renderAll(); setStatus('✅ 已保存');
+        const floorVal = $box.find('.mv-edit-floor-input').val().trim();
+        const newLinkedId = floorVal === '' ? null : (parseInt(floorVal, 10) - 1);
+
+        const floorChanged = newLinkedId !== entry.linkedMessageId;
+        if (floorChanged) {
+            // 删除旧条目，按新楼层重新插入
+            const list = loadMemories(_chatId);
+            const filtered = list.filter(e => e.id !== entry.id);
+            saveMemories(_chatId, filtered);
+            const newEntry = addMemoryAtFloor(_chatId, {
+                ...entry,
+                content, tags, importance: imp, date,
+                linkedMessageId: newLinkedId,
+            });
+            _expandedIds.delete(entry.id);
+            _expandedIds.add(newEntry.id);
+        } else {
+            updateMemory(_chatId, entry.id, { content, tags, importance: imp, date });
+            _expandedIds.add(entry.id);
+        }
+        triggerSave(); updateInjection(_chatId, _settings); renderAll(); setStatus('✅ 已保存');
     });
 }
 
@@ -584,8 +648,18 @@ function bindPanelEvents() {
     $('#mv-merge-confirm').on('click', () => {
         const content = $('#mv-merge-content').val().trim();
         if (!content) return;
-        mergeMemories(_chatId, [..._selectedIds], content);
-        _selectedIds.clear(); $('#mv-merge-modal').removeClass('mv-modal-active'); triggerSave(); updateInjection(_chatId, _settings); renderAll(); setStatus('✅ 合并完成');
+        const merged = mergeMemories(_chatId, [..._selectedIds], content);
+        _selectedIds.clear(); $('#mv-merge-modal').removeClass('mv-modal-active'); triggerSave(); updateInjection(_chatId, _settings);
+        if (merged) {
+            _highlightIds.add(merged.id);
+            renderAll();
+            const $target = $(`[data-id="${merged.id}"]`);
+            if ($target.length) $target[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            setTimeout(() => { _highlightIds.delete(merged.id); renderAll(); }, 2000);
+        } else {
+            renderAll();
+        }
+        setStatus('✅ 合并完成');
     });
 
     // 扫描弹窗（保留 HTML，但实际已改为 confirm()，cancel 仍可关闭以防万一）
@@ -626,7 +700,21 @@ function addInlineNewEntry() {
 
 function openMergeModal() {
     const list = loadMemories(_chatId);
-    $('#mv-merge-content').val(list.filter(e=>_selectedIds.has(e.id)).map(e=>e.content).join('\n\n'));
+    const selected = list.filter(e => _selectedIds.has(e.id));
+    selected.sort((a, b) => a.timestamp - b.timestamp);
+    const lines = [];
+    let lastDate = null;
+    for (const e of selected) {
+        const tagsStr = (e.tags || []).join(',');
+        const imp = (e.importance || 0).toFixed(1);
+        if (e.date !== lastDate) {
+            lines.push(`${e.date}|${tagsStr}|${imp}|${e.content}`);
+            lastDate = e.date;
+        } else {
+            lines.push(`${tagsStr}|${imp}|${e.content}`);
+        }
+    }
+    $('#mv-merge-content').val(lines.join('\n'));
     $('#mv-merge-modal').addClass('mv-modal-active');
 }
 
@@ -752,6 +840,11 @@ export function syncSettings(s) {
     $('#mv-set-pinned-first').prop('checked', s.pinnedFirst);
     $('#mv-set-recent-n').val(s.recentN);
     $('#mv-set-def-imp').val(s.defaultImportance);
+    $('#mv-set-inject-format').val(s.injectFormat || 'lenitxt');
+    $('#mv-set-auto-capture').prop('checked', s.autoCapture);
+    $('#mv-set-auto-capture-n').val(s.autoCaptureExcludeN ?? 6);
+    $('#mv-set-auto-clean-restore').prop('checked', s.autoCleanAfterRestore);
+    $('#mv-fp-chat-switch-copy').val(s.chatSwitchCopy || 'empty_only');
     const $box = $('#mv-preset-tags-box').empty();
     (s.presetTags||[]).forEach((tag,i) => {
         $box.append(`<span class="mv-preset-tag">#${esc(tag)} <button class="mv-preset-tag-del" data-idx="${i}">×</button></span>`);

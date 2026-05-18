@@ -13,7 +13,7 @@ import {
     getCurrentChatId, loadMemories, saveMemories,
     saveDbSnapshot, markSourceDeleted,
     restoreAllToChat, restoreDbSnapshot, getChatSnapshot,
-    scanAndStoreMessage,
+    scanAndStoreMessage, copyMemories,
 } from './src/memory.js';
 
 import { updateInjection, clearInjection } from './src/inject.js';
@@ -36,6 +36,9 @@ const DEFAULT_SETTINGS = {
     presetTags:           [],
     autoCapture:          false,
     autoCaptureExcludeN:  6,
+    injectFormat:         'lenitxt',
+    autoCleanAfterRestore: false,
+    chatSwitchCopy:       'empty_only', // 'never' | 'empty_only' | 'always'
 };
 
 let settings = { ...DEFAULT_SETTINGS };
@@ -77,9 +80,27 @@ function doSaveChat() {
 // ─── 聊天切换 ─────────────────────────────────────────────────────────────
 
 function handleChatChanged() {
-    chatId = getCurrentChatId();
+    const newChatId = getCurrentChatId();
+    const oldChatId = chatId;
+    chatId = newChatId;
     setUiChatId(chatId);
     clearInjection();
+
+    // 聊天切换复制记忆
+    if (newChatId && oldChatId && newChatId !== oldChatId && settings.chatSwitchCopy !== 'never') {
+        const srcMemories = loadMemories(oldChatId);
+        const dstMemories = loadMemories(newChatId);
+        const shouldPrompt = settings.chatSwitchCopy === 'always'
+            ? srcMemories.length > 0
+            : (srcMemories.length > 0 && dstMemories.length === 0);
+        if (shouldPrompt) {
+            if (confirm(`检测到聊天切换，是否从旧聊天复制 ${srcMemories.length} 条记忆到新聊天？`)) {
+                copyMemories(oldChatId, newChatId);
+                console.log(`[MemoryVault] 用户确认：已从 ${oldChatId} 复制记忆到 ${newChatId}`);
+            }
+        }
+    }
+
     if (chatId && settings.enabled) updateInjection(chatId, settings);
     onChatChanged();
     syncSettingsPanel();
@@ -155,6 +176,10 @@ function handleMessageDeleted(mesid) {
 
 function extractMesid(arg) {
     if (typeof arg === 'number') return arg;
+    if (typeof arg === 'string') {
+        const n = parseInt(arg, 10);
+        return isNaN(n) ? null : n;
+    }
     if (typeof arg === 'object' && arg !== null) {
         return arg.messageId ?? arg.mesid ?? arg.index ?? null;
     }
@@ -219,6 +244,9 @@ function syncSettingsPanel() {
     jQuery('#mv-set-def-imp').val(settings.defaultImportance);
     jQuery('#mv-set-auto-capture').prop('checked', settings.autoCapture);
     jQuery('#mv-set-auto-capture-n').val(settings.autoCaptureExcludeN);
+    jQuery('#mv-set-inject-format').val(settings.injectFormat);
+    jQuery('#mv-fp-chat-switch-copy').val(settings.chatSwitchCopy);
+    jQuery('#mv-set-auto-clean-restore').prop('checked', settings.autoCleanAfterRestore);
     renderPresetTags();
 }
 
@@ -274,6 +302,11 @@ function bindSettingsPanel() {
         if (!isNaN(v)) { settings.defaultImportance = Math.min(1, Math.max(0, v)); savePluginSettings(); }
     });
 
+    doc.on('change', '#mv-set-auto-clean-restore', function() {
+        settings.autoCleanAfterRestore = this.checked;
+        savePluginSettings();
+    });
+
     // 测试存储后端
     doc.on('click', '#mv-test-ext', async () => {
         const ok = await testBackend(StorageBackend.EXT);
@@ -320,12 +353,34 @@ function bindSettingsPanel() {
         reader.onload = (ev) => {
             try {
                 const dump = JSON.parse(ev.target.result);
-                const mode = prompt('导入模式：输入 merge 合并，输入 overwrite 覆盖', 'merge');
-                if (!mode) return;
-                importData(dump, mode.trim() === 'overwrite' ? 'overwrite' : 'merge');
+                const merge = confirm('导入模式选择：\n\n点击「确定」= 合并模式（保留现有记忆，追加新记忆）\n点击「取消」= 进入覆盖模式确认');
+                let importMode;
+                if (merge) {
+                    importMode = 'merge';
+                } else {
+                    const overwrite = confirm('⚠️ 覆盖模式将替换同 chatId 下的所有现有记忆！\n\n确定要使用覆盖模式吗？');
+                    if (!overwrite) return;
+                    importMode = 'overwrite';
+                }
+                const result = importData(dump, importMode);
+                if (!result.success) {
+                    alert('❌ 导入失败：' + result.error);
+                    return;
+                }
+                const importedKeys = Object.keys(dump).filter(k => k.startsWith('chat_'));
+                const currentKey = chatId ? 'chat_' + chatId : null;
+                const hasCurrentChat = currentKey && importedKeys.includes(currentKey);
+
+                if (chatId && settings.enabled) updateInjection(chatId, settings);
                 renderAll();
-                alert('✅ 导入完成');
-            } catch { alert('❌ 文件解析失败'); }
+
+                if (hasCurrentChat) {
+                    alert('✅ 导入完成，当前聊天的记忆已更新');
+                } else {
+                    const chatCount = importedKeys.length;
+                    alert(`✅ 导入完成（共 ${chatCount} 个聊天的记忆）。\n当前聊天无对应记忆，请切换到导出时的聊天查看。`);
+                }
+            } catch { alert('❌ 文件解析失败：不是有效的 JSON 文件'); }
         };
         reader.readAsText(file);
         this.value = '';
@@ -381,6 +436,17 @@ function bindSettingsPanel() {
             settings.autoCaptureExcludeN = n;
             savePluginSettings();
         }
+    });
+
+    doc.on('change', '#mv-set-inject-format', function() {
+        settings.injectFormat = jQuery(this).val();
+        savePluginSettings();
+        if (chatId && settings.enabled) updateInjection(chatId, settings);
+    });
+
+    doc.on('change', '#mv-fp-chat-switch-copy', function() {
+        settings.chatSwitchCopy = jQuery(this).val();
+        savePluginSettings();
     });
 
     // 抽屉设置储存应用
