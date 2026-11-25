@@ -135,7 +135,7 @@ const PANEL_HTML = `
   <div id="mv-settings-view" class="mv-settings-view" style="display:none;">
 
     <div class="mv-set-top-bar">
-      <span style="font-size:11px;color:#8B7355;">点击各区块标题可折叠 / 展开</span>
+      <span style="font-size:11px;color:#8B7355;">点击各分组标题可折叠 / 展开</span>
       <div style="display:flex;gap:4px;">
         <button type="button" class="mv-tbtn mv-set-mini-btn" id="mv-set-expand-all">全部展开</button>
         <button type="button" class="mv-tbtn mv-set-mini-btn" id="mv-set-collapse-all">全部收起</button>
@@ -149,148 +149,162 @@ const PANEL_HTML = `
       </label>
     </div>
 
+    <!-- 1. 分区、捕获与提示词 -->
     <div class="mv-set-section">
-      <div class="mv-set-title">显示设置</div>
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-        <label class="mv-set-label">折叠态正文预览行数:
-          <input type="number" id="mv-set-preview-lines" class="mv-num-input" min="1" max="10" step="1" value="2">
+      <div class="mv-set-title">🏷️ 分区、捕获与提示词</div>
+
+      <div class="mv-set-sub">
+        <div class="mv-set-subtitle">分区与捕获标签</div>
+        <div id="mv-zones-editor" class="mv-zones-editor"></div>
+        <button class="mv-tbtn" id="mv-zone-add-btn" style="width:100%;margin-top:6px;">＋ 新增分区（如大总结 / Summary）</button>
+        <div class="mv-set-hint">标签名不带尖括号（如 Lenitxt）。配置 ≥2 个分区时，主界面顶部会自动出现快捷切换条。</div>
+      </div>
+
+      <div class="mv-set-sub">
+        <div class="mv-set-subtitle">扫描与自动捕获</div>
+        <button class="mv-tbtn" id="mv-scan-chat-btn" style="width:100%;margin-bottom:6px;">🔍 手动扫描聊天中的分区标签块</button>
+        <label class="mv-set-label" style="margin-bottom:5px;">
+          <input type="checkbox" id="mv-set-scan-exclude-recent-n"> 手动扫描时同时排除最近 N 楼
         </label>
-        <span style="font-size:11px;color:#8B7355;">行（1~10，底部楼层/日期/标签固定占 1 行）</span>
-      </div>
-    </div>
-
-    <div class="mv-set-section">
-      <div class="mv-set-title">分区与捕获标签（可同时捕获多个代码块并分区管理）</div>
-      <div id="mv-zones-editor" class="mv-zones-editor"></div>
-      <button class="mv-tbtn" id="mv-zone-add-btn" style="width:100%;margin-top:6px;">＋ 新增分区（如大总结 / Summary）</button>
-      <div style="font-size:11px;color:#8B7355;margin-top:4px;">
-        标签名不带尖括号（例如填 Lenitxt 匹配 &lt;Lenitxt&gt;...&lt;/Lenitxt&gt;）。配置 2 个及以上分区时，主界面顶部会自动出现快捷切换条。
-      </div>
-    </div>
-
-    <div class="mv-set-section">
-      <div class="mv-set-title">存储方案</div>
-      <select id="mv-set-backend" class="mv-select" style="width:100%;margin-bottom:6px;">
-        <option value="ext">后端保存（推荐，跟随ST数据）</option>
-        <option value="local">浏览器保存（备选，清缓存丢失）</option>
-      </select>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px;">
-        <button class="mv-tbtn" id="mv-test-ext">测试①</button>
-        <span id="mv-test-ext-result" class="mv-test-result"></span>
-        <button class="mv-tbtn" id="mv-test-local">测试②</button>
-        <span id="mv-test-local-result" class="mv-test-result"></span>
-      </div>
-      <button class="mv-tbtn" id="mv-migrate-backend-btn" style="width:100%;">🔄 从另一存储后端一键迁移数据到当前后端</button>
-    </div>
-
-    <div class="mv-set-section">
-      <div class="mv-set-title">注入设置</div>
-      <div style="margin-bottom:6px;">
-        <label class="mv-set-label" style="margin-bottom:4px;">注入位置:</label>
-        <select id="mv-set-position" class="mv-select" style="width:100%;">
-          <option value="in_chat">注入历史聊天（聊天记录最前方）</option>
-          <option value="before_prompt">before_prompt（主提示词之前）</option>
-          <option value="after_char">after_char（主提示词 / 角色卡之后）</option>
-          <option value="authors_note">authors_note（聊天内深度 4）</option>
-        </select>
-      </div>
-      <label class="mv-set-label" style="margin-bottom:4px;">
-        <input type="checkbox" id="mv-set-pinned-first"> 置顶区块在前
-      </label>
-      <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
-        <label class="mv-set-label">最近N条:
-          <input type="number" id="mv-set-recent-n" class="mv-num-input" min="0" max="999">
+        <label class="mv-set-label" style="margin-bottom:5px;">
+          <input type="checkbox" id="mv-set-auto-capture"> 启用自动捕获记忆
         </label>
-        <span style="font-size:11px;color:#8B7355;">(0=全发，按楼层排序)</span>
+        <div style="font-size:11px;color:#B71C1C;margin-bottom:6px;">
+          ⚠️ 开启后，超出 N 楼的消息中已配置分区的标签块将被自动入库并从聊天记录中删除
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <label class="mv-set-label">最近 N 楼不捕获:</label>
+          <input type="number" id="mv-set-auto-capture-n" class="mv-num-input" min="0" max="999" value="6">
+        </div>
       </div>
-      <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
-        <label class="mv-set-label">注入格式:</label>
-        <select id="mv-set-inject-format" class="mv-select" style="flex:1;">
-          <option value="lenitxt">带分区标签（如 &lt;Lenitxt&gt;）</option>
-          <option value="plain">纯文本（日期|标签|内容）</option>
-          <option value="lenitxt_single">整合记忆（每分区仅包裹一次）</option>
+
+      <div class="mv-set-sub">
+        <div class="mv-set-subtitle">预设提示词（随分区标签自动更新）</div>
+        <textarea id="mv-preset-prompt-box" class="mv-textarea" rows="8" readonly style="font-size:12px;line-height:1.5;min-height:150px;"></textarea>
+        <button type="button" class="mv-tbtn mv-merge-btn" id="mv-copy-preset-prompt" style="width:100%;margin-top:6px;">📋 一键复制预设提示词</button>
+      </div>
+    </div>
+
+    <!-- 2. 注入与显示 -->
+    <div class="mv-set-section">
+      <div class="mv-set-title">📤 注入与显示</div>
+
+      <div class="mv-set-sub">
+        <div class="mv-set-subtitle">提示词注入规则</div>
+        <div style="margin-bottom:6px;">
+          <label class="mv-set-label" style="margin-bottom:4px;">注入位置:</label>
+          <select id="mv-set-position" class="mv-select" style="width:100%;">
+            <option value="in_chat">注入历史聊天（聊天记录最前方）</option>
+            <option value="before_prompt">before_prompt（主提示词之前）</option>
+            <option value="after_char">after_char（主提示词 / 角色卡之后）</option>
+            <option value="authors_note">authors_note（聊天内深度 4）</option>
+          </select>
+        </div>
+        <label class="mv-set-label" style="margin-bottom:4px;">
+          <input type="checkbox" id="mv-set-pinned-first"> 置顶区块在前
+        </label>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+          <label class="mv-set-label">最近 N 条:
+            <input type="number" id="mv-set-recent-n" class="mv-num-input" min="0" max="999">
+          </label>
+          <span class="mv-set-hint" style="margin:0;">(0=全发，按楼层排序)</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+          <label class="mv-set-label">注入格式:</label>
+          <select id="mv-set-inject-format" class="mv-select" style="flex:1;">
+            <option value="lenitxt">带分区标签（如 &lt;Lenitxt&gt;）</option>
+            <option value="plain">纯文本（日期|标签|内容）</option>
+            <option value="lenitxt_single">整合记忆（每分区仅包裹一次）</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="mv-set-sub">
+        <div class="mv-set-subtitle">卡片显示与默认值</div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px;">
+          <label class="mv-set-label">折叠态正文预览:
+            <input type="number" id="mv-set-preview-lines" class="mv-num-input" min="1" max="10" step="1" value="2">
+          </label>
+          <span class="mv-set-hint" style="margin:0;">行（底部楼层/日期/标签固定占 1 行）</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <label class="mv-set-label">默认重要度:
+            <input type="number" id="mv-set-def-imp" class="mv-num-input" min="0" max="1" step="0.1">
+          </label>
+          <span class="mv-set-hint" style="margin:0;">（0~1，步进 0.1）</span>
+        </div>
+      </div>
+
+      <div class="mv-set-sub">
+        <div class="mv-set-subtitle">预设标签（新增/编辑记忆时一键点选）</div>
+        <div id="mv-preset-tags-box" style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px;min-height:20px;"></div>
+        <div style="display:flex;gap:6px;">
+          <input type="text" id="mv-preset-tag-input" class="mv-input" placeholder="新标签…" style="flex:1;">
+          <button class="mv-tbtn" id="mv-preset-tag-add">添加</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. 绑定、还原与快照 -->
+    <div class="mv-set-section">
+      <div class="mv-set-title">🗂️ 绑定、还原与快照</div>
+
+      <div class="mv-set-sub">
+        <div class="mv-set-subtitle">聊天记忆库绑定与切换</div>
+        <button class="mv-tbtn" id="mv-open-vaults-btn" style="width:100%;margin-bottom:6px;">🗂️ 历史记忆库管理 / 重新绑定</button>
+        <label class="mv-set-label" style="margin-bottom:4px;">普通切换到新聊天时:</label>
+        <select id="mv-fp-chat-switch-copy" class="mv-select" style="width:100%;">
+          <option value="never">从不询问复制</option>
+          <option value="empty_only">仅新聊天记忆为空时询问</option>
+          <option value="always">始终询问（保险机制）</option>
         </select>
+        <div class="mv-set-hint">注：酒馆改名自动沿用原库，创建分支自动复制独立库。</div>
+      </div>
+
+      <div class="mv-set-sub">
+        <div class="mv-set-subtitle">还原到楼层与快照恢复</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <button class="mv-tbtn" id="mv-restore-all-btn" style="width:100%;">↩ 一键还原所有记忆到来源楼层</button>
+          <label class="mv-set-label">
+            <input type="checkbox" id="mv-set-auto-clean-restore"> 还原到楼层后自动清理遗弃区备份
+          </label>
+          <button class="mv-tbtn mv-danger-btn" id="mv-restore-chat-snap-btn" style="width:100%;">⚠️ 恢复聊天快照（回退被删块的原文）</button>
+          <button class="mv-tbtn mv-danger-btn" id="mv-restore-db-snap-btn" style="width:100%;">⚠️ 恢复记忆库快照（回退上次写库前）</button>
+        </div>
       </div>
     </div>
 
+    <!-- 4. 存储与备份 -->
     <div class="mv-set-section">
-      <div class="mv-set-title">默认重要度</div>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <input type="number" id="mv-set-def-imp" class="mv-num-input" min="0" max="1" step="0.1">
-        <span style="font-size:11px;color:#8B7355;">（0~1，步进0.1）</span>
+      <div class="mv-set-title">💾 存储与备份</div>
+
+      <div class="mv-set-sub">
+        <div class="mv-set-subtitle">存储方案</div>
+        <select id="mv-set-backend" class="mv-select" style="width:100%;margin-bottom:6px;">
+          <option value="ext">后端保存（推荐，跟随ST数据）</option>
+          <option value="local">浏览器保存（备选，清缓存丢失）</option>
+        </select>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px;">
+          <button class="mv-tbtn" id="mv-test-ext">测试①</button>
+          <span id="mv-test-ext-result" class="mv-test-result"></span>
+          <button class="mv-tbtn" id="mv-test-local">测试②</button>
+          <span id="mv-test-local-result" class="mv-test-result"></span>
+        </div>
+        <button class="mv-tbtn" id="mv-migrate-backend-btn" style="width:100%;">🔄 从另一存储后端一键迁移数据到当前后端</button>
+      </div>
+
+      <div class="mv-set-sub">
+        <div class="mv-set-subtitle">JSON 导出 / 导入</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <button class="mv-tbtn" id="mv-export-all" style="width:100%;">全量导出 JSON</button>
+          <button class="mv-tbtn" id="mv-export-chat" style="width:100%;">当前聊天导出</button>
+          <button class="mv-tbtn" id="mv-import-btn" style="width:100%;">导入 JSON</button>
+          <input type="file" id="mv-import-file" accept=".json" style="display:none;">
+        </div>
       </div>
     </div>
 
-    <div class="mv-set-section">
-      <div class="mv-set-title">预设标签（新增/编辑记忆时可一键点选）</div>
-      <div id="mv-preset-tags-box" style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px;min-height:20px;"></div>
-      <div style="display:flex;gap:6px;">
-        <input type="text" id="mv-preset-tag-input" class="mv-input" placeholder="新标签…" style="flex:1;">
-        <button class="mv-tbtn" id="mv-preset-tag-add">添加</button>
-      </div>
-    </div>
-
-    <div class="mv-set-section">
-      <div class="mv-set-title">导出 / 导入</div>
-      <div style="display:flex;flex-direction:column;gap:6px;">
-        <button class="mv-tbtn" id="mv-export-all" style="width:100%;">全量导出 JSON</button>
-        <button class="mv-tbtn" id="mv-export-chat" style="width:100%;">当前聊天导出</button>
-        <button class="mv-tbtn" id="mv-import-btn" style="width:100%;">导入 JSON</button>
-        <input type="file" id="mv-import-file" accept=".json" style="display:none;">
-      </div>
-    </div>
-
-    <div class="mv-set-section">
-      <div class="mv-set-title">操作工具</div>
-      <div style="display:flex;flex-direction:column;gap:6px;">
-        <button class="mv-tbtn" id="mv-open-vaults-btn" style="width:100%;">🗂️ 历史记忆库管理 / 重新绑定</button>
-        <button class="mv-tbtn" id="mv-scan-chat-btn" style="width:100%;">🔍 手动扫描聊天中的分区标签块</button>
-        <button class="mv-tbtn" id="mv-restore-all-btn" style="width:100%;">↩ 一键还原所有记忆到来源楼层</button>
-        <button class="mv-tbtn mv-danger-btn" id="mv-restore-chat-snap-btn" style="width:100%;">⚠️ 恢复聊天快照</button>
-        <button class="mv-tbtn mv-danger-btn" id="mv-restore-db-snap-btn" style="width:100%;">⚠️ 恢复记忆库快照</button>
-      </div>
-    </div>
-
-    <div class="mv-set-section">
-      <div class="mv-set-title">还原行为</div>
-      <label class="mv-set-label">
-        <input type="checkbox" id="mv-set-auto-clean-restore"> 还原后自动清理遗弃区备份
-      </label>
-      <div style="font-size:11px;color:#8B7355;margin-top:2px;">
-        关闭时还原的记忆会保留在遗弃区作为备份，需手动清理
-      </div>
-    </div>
-
-    <div class="mv-set-section">
-      <div class="mv-set-title">聊天切换复制记忆</div>
-      <select id="mv-fp-chat-switch-copy" class="mv-select" style="width:100%;">
-        <option value="never">从不复制</option>
-        <option value="empty_only">仅新聊天记忆为空时询问</option>
-        <option value="always">始终询问（保险机制）</option>
-      </select>
-      <div style="font-size:11px;color:#8B7355;margin-top:4px;">
-        注：酒馆内改名会自动沿用原库；创建分支会自动复制独立库。此项仅控制普通切换到全新空白聊天时是否询问。
-      </div>
-    </div>
-
-    <div class="mv-set-section">
-      <div class="mv-set-title">自动捕获</div>
-      <label class="mv-set-label" style="margin-bottom:6px;">
-        <input type="checkbox" id="mv-set-scan-exclude-recent-n"> 手动扫描区块时同时排除最近N楼
-      </label>
-      <label class="mv-set-label" style="margin-bottom:6px;">
-        <input type="checkbox" id="mv-set-auto-capture"> 启用自动捕获记忆
-      </label>
-      <div style="font-size:11px;color:#B71C1C;margin-bottom:6px;">
-        ⚠️ 开启后，超出 N 楼的消息中已配置分区的标签块将被自动入库并从聊天记录中删除
-      </div>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <label class="mv-set-label">最近N楼不捕获:</label>
-        <input type="number" id="mv-set-auto-capture-n" class="mv-num-input" min="0" max="999" value="6">
-      </div>
-    </div>
-
-    <div style="height:12px;"></div>
+    <div style="height:8px;"></div>
     <button class="mv-tbtn mv-save-settings-btn" id="mv-save-settings-btn" style="width:100%;background:#C8A250;color:white;border-color:#B8956A;">💾 储存应用</button>
     <div style="height:12px;"></div>
   </div>
@@ -411,6 +425,38 @@ function switchView(v) {
 }
 
 // ─── 设置页：分区与捕获标签编辑器 ─────────────────────────────────────────
+function buildPresetPromptText() {
+    const zones = getZones();
+    const primary = zones[0];
+    const extraZones = zones.slice(1);
+
+    const extraText = extraZones.length
+        ? '\n' + extraZones.map(z =>
+            `- 【${z.name}】使用 <${z.tag}>日期|标签1,标签2|重要度|内容</${z.tag}> 包裹${z.defaultPinned ? '（该分区条目将默认长期置顶，适合阶段性大总结）' : ''}。`
+        ).join('\n')
+        : '';
+
+    return `<记忆格式>
+当你想留下值得长期记住的内容时，在回复最末尾用 <${primary.tag}>...</${primary.tag}> 包裹输出。
+单条记忆独立占一个标签块，严格按四段格式填写：YYYY-MM-DD|标签1,标签2|重要度|内容
+
+示例：
+<${primary.tag}>2026-05-01|赖床,温馨,Gemini|0.9|她赖床时提到Gemini很可爱让我吃醋</${primary.tag}>${extraText}
+
+记录规则：
+1. 记忆会长期保存但有条数限制，为节省上下文，除非需要修正旧记忆，否则避免重复记录。
+2. 只记录时隔半个月后仍会用得上的重要信息，严禁记录几小时后就失效的琐碎内容❌。
+3. 每次只需独立输出本次新增的记忆，不要重复输出过往旧记忆。
+4. 重要度范围 0.0~1.0，由你自行判断——越会影响你后续说话语气、态度与行为习惯的记忆，重要度越高。
+5. 若有想要删除的永久记忆，直接告诉 user，由 user 协助删除。
+</记忆格式>`;
+}
+
+function syncPresetPromptBox() {
+    const $ta = $('#mv-preset-prompt-box');
+    if ($ta.length) $ta.val(buildPresetPromptText());
+}
+
 function renderZonesEditor() {
     const zones = getZones();
     _settings.zones = zones;
@@ -436,6 +482,7 @@ function renderZonesEditor() {
             if (!val) { $(this).val(z.name); return; }
             _settings.zones[idx].name = val;
             triggerSave();
+            syncPresetPromptBox();
             if (_vaultId && _settings.enabled) updateInjection(_vaultId, _settings);
         });
 
@@ -445,6 +492,7 @@ function renderZonesEditor() {
             $(this).val(val);
             _settings.zones[idx].tag = val;
             triggerSave();
+            syncPresetPromptBox();
             if (_vaultId && _settings.enabled) updateInjection(_vaultId, _settings);
         });
 
@@ -465,6 +513,7 @@ function renderZonesEditor() {
 
         $box.append($row);
     });
+    syncPresetPromptBox();
 }
 
 // ─── 预设标签选择器组件 ───────────────────────────────────────────────────
@@ -1519,6 +1568,15 @@ function bindPanelEvents() {
     $(document).on('click', '#mv-save-settings-btn', () => {
         triggerSave();
         setStatus('✅ 设置已储存');
+    });
+
+    $(document).on('click', '#mv-copy-preset-prompt', () => {
+        const txt = $('#mv-preset-prompt-box').val();
+        navigator.clipboard?.writeText(txt).catch(() => {});
+        const $btn = $('#mv-copy-preset-prompt');
+        $btn.text('✅ 已复制到剪贴板');
+        setTimeout(() => $btn.text('📋 一键复制预设提示词'), 1500);
+        setStatus('✅ 已复制预设提示词');
     });
 }
 

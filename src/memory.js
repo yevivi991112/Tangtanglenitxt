@@ -334,7 +334,7 @@ export function parseAiFormat(text) {
     if (!content) return null;
     return {
         date:       /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : new Date().toISOString().slice(0, 10),
-        tags:       tagStr ? tagStr.split(',').map(t => t.trim()).filter(Boolean) : [],
+        tags:       tagStr ? tagStr.split(/[,，\s]+/).map(t => t.trim()).filter(Boolean) : [],
         importance: isNaN(importance) ? 0.5 : Math.min(1, Math.max(0, importance)),
         content,
     };
