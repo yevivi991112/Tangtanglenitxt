@@ -834,22 +834,29 @@ function buildItem(entry, opts={}) {
 
     const dragHandleHtml = allowDrag ? '<span class="mv-drag-handle" title="按住上下拖动排序">⋮⋮</span>' : '';
 
+    const previewText = (entry.content || '').replace(/\s+/g, ' ').trim();
     $item.append(`
-      <div class="mv-item-top">
-        ${dragHandleHtml}
-        <input type="checkbox" class="mv-checkbox" data-id="${esc(entry.id)}" ${isSelected?'checked':''}>
-        <span class="mv-floor">#${entry.linkedMessageId !== null && entry.linkedMessageId !== undefined ? entry.linkedMessageId + 1 : '—'}</span>
-        ${zoneBadgeHtml}
-        <span class="mv-date">${esc(entry.date)}</span>
-        <span class="mv-tags">${tagsHtml}</span>
-        <span class="mv-imp">${(entry.importance||0).toFixed(1)}</span>
-        <span class="mv-preview-short">${esc((entry.content||'').split('\n')[0].slice(0,60))}</span>
-        <button class="mv-expand-arrow" data-id="${esc(entry.id)}">${expanded?'▲':'▼'}</button>
+      <div class="mv-item-top${expanded ? ' mv-item-top-expanded' : ''}">
+        <div class="mv-item-main-row">
+          ${dragHandleHtml}
+          <input type="checkbox" class="mv-checkbox" data-id="${esc(entry.id)}" ${isSelected?'checked':''}>
+          ${expanded
+            ? `<div class="mv-content-full mv-content-inline">${esc(entry.content)}</div>`
+            : `<div class="mv-preview-2line">${esc(previewText || '（无内容）')}</div>`
+          }
+          <button class="mv-expand-arrow" data-id="${esc(entry.id)}">${expanded?'▲':'▼'}</button>
+        </div>
+        <div class="mv-item-meta-row${expanded ? ' mv-item-meta-expanded' : ''}">
+          <span class="mv-floor">#${entry.linkedMessageId !== null && entry.linkedMessageId !== undefined ? entry.linkedMessageId + 1 : '—'}</span>
+          ${zoneBadgeHtml}
+          <span class="mv-date">${esc(entry.date)}</span>
+          <span class="mv-imp">${(entry.importance||0).toFixed(1)}</span>
+          <span class="mv-tags">${tagsHtml}</span>
+        </div>
       </div>
     `);
 
     if (expanded) {
-        $item.append(`<div class="mv-content-full">${esc(entry.content)}</div>`);
 
         if (showPinOrder) {
             const $ord = $(`
