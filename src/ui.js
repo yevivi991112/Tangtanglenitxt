@@ -1,11 +1,12 @@
 /**
- * ui.js — 浮动面板：主视图 + 内置设置视图（⚙️切换）+ 历史记忆库管理/重新绑定弹窗
+ * ui.js — 浮动面板：主视图 + 内置设置视图（⚙️切换）+ 历史记忆库管理 + 注入预览弹窗
  *
  * 设计不变量：
  * 1. 所有设置控件集中在浮动面板内，避免与外部 settings.html 产生 DOM ID 冲突。
- * 2. 「全选」仅作用于当前所在 Tab 的可见条目，防止误删其他分区（记忆库/遗弃区）的数据。
+ * 2. 「全选当前页」仅作用于当前所在 Tab 的可见条目，防止误删其他分区（记忆库/遗弃区）的数据。
  * 3. 编辑楼层序号重新插入时，必须完整保留原条目的 pinned / pinnedOrder / sourceDeleted 状态。
- * 4. 当聊天改名或切换导致找不到旧记忆时，用户可通过头部 🗂️ 按钮随时查看所有历史库并一键重绑或合并。
+ * 4. 新增记忆采用临时编辑表单，仅点击「保存」时写入数据库，点「取消」不会残留空白记录。
+ * 5. 置顶区块与记忆库区块均支持折叠收起；「置顶排序」控件仅在置顶 Tab 显示。
  */
 
 import {
@@ -17,7 +18,7 @@ import {
     getCurrentChatId, bindCurrentChatToVault, mergeVaultInto,
 } from './memory.js';
 import { listAllVaults, deleteVault } from './storage.js';
-import { updateInjection } from './inject.js';
+import { updateInjection, buildPromptText, resolvePosition } from './inject.js';
 import { filterMemories } from './search.js';
 
 const $ = jQuery;
@@ -42,6 +43,7 @@ let _pinnedSort      = 'order';
 let _searchQuery     = '';
 let _view            = 'main'; // 'main' | 'settings'
 let _activeTab       = 'pinned'; // 'pinned' | 'recent' | 'abandoned'
+let _pinnedCollapsed = false;
 let _vaultCollapsed  = true;
 let _highlightIds    = new Set();
 let _vaultSearch     = '';
@@ -54,6 +56,7 @@ const PANEL_HTML = `
   <div class="mv-header" id="mv-header">
     <span class="mv-title">🍬 糖的记忆管理</span>
     <div class="mv-header-actions">
+      <button class="mv-hbtn" id="mv-preview-inject-btn" title="预览实际注入给 AI 的文本">👁️</button>
       <button class="mv-hbtn" id="mv-vaults-btn" title="历史记忆库 / 重新绑定">🗂️</button>
       <button class="mv-hbtn" id="mv-settings-btn" title="设置">⚙️</button>
       <button class="mv-hbtn" id="mv-close-btn" title="关闭">✕</button>
@@ -62,15 +65,21 @@ const PANEL_HTML = `
 
   <!-- 主视图 -->
   <div id="mv-main-view" class="mv-flex-col">
+    <!-- 总开关关闭提示条 -->
+    <div id="mv-disabled-banner" class="mv-disabled-banner" style="display:none;">
+      <span>⏸️ 插件总开关已关闭（当前不注入记忆）</span>
+      <button class="mv-tbtn mv-banner-btn" id="mv-quick-enable-btn">立即开启</button>
+    </div>
+
     <!-- Tab 切换栏 -->
     <div class="mv-tab-bar">
-      <button class="mv-tab mv-tab-active" data-tab="pinned">📌置顶</button>
-      <button class="mv-tab" data-tab="recent">📋最近</button>
-      <button class="mv-tab mv-tab-trash" data-tab="abandoned">🗑️</button>
+      <button class="mv-tab mv-tab-active" data-tab="pinned" id="mv-tab-pinned">📌置顶</button>
+      <button class="mv-tab" data-tab="recent" id="mv-tab-recent">📋最近</button>
+      <button class="mv-tab mv-tab-trash" data-tab="abandoned" id="mv-tab-abandoned">🗑️</button>
     </div>
 
     <div class="mv-toolbar">
-      <label class="mv-label" style="margin-left:0;">置顶排序:
+      <label class="mv-label" id="mv-pin-sort-wrap" style="margin-left:0;">置顶排序:
         <select id="mv-pin-sort" class="mv-select">
           <option value="order">自定义序号</option>
           <option value="time_asc">时间↑</option>
@@ -79,17 +88,25 @@ const PANEL_HTML = `
           <option value="imp_asc">重要度↑</option>
         </select>
       </label>
-      <input type="text" id="mv-search-input" class="mv-input" placeholder="搜索关键词/标签…" style="flex:1;min-width:80px;">
-      <button class="mv-tbtn" id="mv-add-btn" style="margin-left:auto;">＋新增</button>
+      <div class="mv-search-wrap">
+        <input type="text" id="mv-search-input" class="mv-input mv-search-input" placeholder="搜索关键词/标签/重要度…">
+        <button class="mv-search-clear" id="mv-search-clear" title="清空搜索" style="display:none;">×</button>
+      </div>
+      <button class="mv-tbtn" id="mv-add-btn">＋新增</button>
     </div>
+
     <div class="mv-multibar" id="mv-multibar" style="display:none;">
       <button class="mv-tbtn" id="mv-sel-all">全选当前页</button>
       <button class="mv-tbtn" id="mv-sel-none">取消</button>
+      <button class="mv-tbtn mv-pin-batch-btn" id="mv-batch-pin-btn">📌置顶</button>
+      <button class="mv-tbtn" id="mv-batch-unpin-btn">取消置顶</button>
       <button class="mv-tbtn mv-merge-btn" id="mv-merge-btn" style="display:none;">🔗合并</button>
       <button class="mv-tbtn mv-danger-btn" id="mv-del-sel-btn" style="display:none;">🗑删除</button>
       <span id="mv-sel-count" style="font-size:11px;color:#8B7355;margin-left:4px;"></span>
     </div>
+
     <div class="mv-body" id="mv-body"></div>
+
     <div class="mv-footer">
       <div class="mv-status" id="mv-status">就绪</div>
       <div class="mv-pager">
@@ -162,7 +179,7 @@ const PANEL_HTML = `
     </div>
 
     <div class="mv-set-section">
-      <div class="mv-set-title">预设标签</div>
+      <div class="mv-set-title">预设标签（新增/编辑记忆时可一键点选）</div>
       <div id="mv-preset-tags-box" style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:6px;min-height:20px;"></div>
       <div style="display:flex;gap:6px;">
         <input type="text" id="mv-preset-tag-input" class="mv-input" placeholder="新标签…" style="flex:1;">
@@ -248,6 +265,19 @@ const PANEL_HTML = `
   </div>
 </div>
 
+<!-- 实际注入预览弹窗 -->
+<div id="mv-inject-preview-modal" class="mv-modal">
+  <div class="mv-modal-box mv-vaults-modal-box">
+    <div class="mv-modal-title">👁️ 实际注入给 AI 的文本预览</div>
+    <div id="mv-inject-preview-meta" class="mv-vaults-current"></div>
+    <textarea id="mv-inject-preview-text" class="mv-textarea mv-inject-preview-ta" readonly rows="10"></textarea>
+    <div class="mv-modal-actions">
+      <button class="mv-btn mv-btn-copy" id="mv-inject-preview-copy">📋 复制文本</button>
+      <button class="mv-btn mv-btn-cancel" id="mv-inject-preview-close">关闭</button>
+    </div>
+  </div>
+</div>
+
 <!-- 历史记忆库管理 / 重新绑定弹窗 -->
 <div id="mv-vaults-modal" class="mv-modal">
   <div class="mv-modal-box mv-vaults-modal-box">
@@ -303,6 +333,42 @@ function switchView(v) {
     }
 }
 
+// ─── 预设标签选择器组件（用于新增/编辑框） ────────────────────────────────
+function buildPresetTagsPicker($tagsInput) {
+    const presets = _settings.presetTags || [];
+    if (!presets.length) return null;
+
+    const $wrap = $('<div class="mv-preset-picker">');
+    $wrap.append('<span class="mv-preset-picker-label">预设标签:</span>');
+
+    const getCurrentTags = () => $tagsInput.val().split(',').map(t => t.trim()).filter(Boolean);
+
+    const syncButtons = () => {
+        const cur = new Set(getCurrentTags());
+        $wrap.find('.mv-preset-pick').each(function() {
+            const tag = $(this).data('tag');
+            $(this).toggleClass('mv-preset-pick-active', cur.has(tag));
+        });
+    };
+
+    presets.forEach(tag => {
+        const $btn = $(`<button type="button" class="mv-preset-pick">#${esc(tag)}</button>`).data('tag', tag);
+        $btn.on('click', () => {
+            const cur = getCurrentTags();
+            const idx = cur.indexOf(tag);
+            if (idx === -1) cur.push(tag);
+            else cur.splice(idx, 1);
+            $tagsInput.val(cur.join(', '));
+            syncButtons();
+        });
+        $wrap.append($btn);
+    });
+
+    $tagsInput.on('input', syncButtons);
+    syncButtons();
+    return $wrap;
+}
+
 // ─── 获取当前 Tab 展示的条目列表（用于「全选当前页」） ────────────────────
 function getCurrentTabVisibleIds() {
     if (!_vaultId) return [];
@@ -323,18 +389,45 @@ function getCurrentTabVisibleIds() {
     return [];
 }
 
+// ─── 更新 Tab 角标 & 工具栏状态 ───────────────────────────────────────────
+function syncHeaderAndTabs(rawList) {
+    // 总开关关闭提示条
+    $('#mv-disabled-banner').toggle(_settings.enabled === false);
+
+    // 置顶排序仅在置顶 Tab 显示
+    $('#mv-pin-sort-wrap').toggle(_activeTab === 'pinned');
+
+    // 搜索清空按钮
+    $('#mv-search-clear').toggle(_searchQuery.length > 0);
+
+    // Tab 数量角标
+    const pinnedCount = getPinnedSorted(rawList).length;
+    const n = _settings.recentN ?? 5;
+    const unpinned = getRecentUnpinned(rawList);
+    const recentCount = n === 0 ? unpinned.length : Math.min(unpinned.length, n);
+    const abandonedCount = getAbandoned(rawList).length;
+
+    $('#mv-tab-pinned').text(pinnedCount ? `📌置顶(${pinnedCount})` : '📌置顶');
+    $('#mv-tab-recent').text(recentCount ? `📋最近(${recentCount})` : '📋最近');
+    $('#mv-tab-abandoned').text(abandonedCount ? `🗑️(${abandonedCount})` : '🗑️');
+}
+
 // ─── 完整渲染 ─────────────────────────────────────────────────────────────
 export function renderAll() {
     if (_view !== 'main') return;
     const $body = $('#mv-body');
 
     if (!_vaultId) {
+        syncHeaderAndTabs([]);
         $body.empty().append('<div class="mv-empty-hint">当前未打开聊天，请先进入一个角色或群聊窗口</div>');
         syncMultibar();
         return;
     }
 
-    let list = loadMemories(_vaultId);
+    const rawList = loadMemories(_vaultId);
+    syncHeaderAndTabs(rawList);
+
+    let list = rawList;
     if (_searchQuery.trim()) list = filterMemories(list, _searchQuery, []);
     const scrollPos = $body.scrollTop();
     const tabScrollPos = $body.find('.mv-tab-content').scrollTop() || 0;
@@ -351,7 +444,7 @@ export function renderAll() {
     }
     $body.append($tabContent);
 
-    // 记忆库区块（始终在 Tab 内容下方，折叠）
+    // 记忆库区块（始终在 Tab 内容下方，可折叠）
     $body.append(buildVaultSection(list));
 
     syncMultibar();
@@ -359,7 +452,7 @@ export function renderAll() {
     $body.find('.mv-tab-content').scrollTop(tabScrollPos);
 }
 
-// ─── 置顶区块 ─────────────────────────────────────────────────────────────
+// ─── 置顶区块（支持一键收起/展开） ────────────────────────────────────────
 function buildPinnedSection(list) {
     let pinned = getPinnedSorted(list);
     if (_pinnedSort === 'time_asc')  pinned = [...pinned].sort((a,b) => (a.timestamp||0) - (b.timestamp||0));
@@ -368,9 +461,31 @@ function buildPinnedSection(list) {
     if (_pinnedSort === 'imp_asc')   pinned = [...pinned].sort((a,b) => (a.importance||0) - (b.importance||0));
 
     const $sec = $('<div class="mv-section">');
-    $sec.append(`<div class="mv-sec-title">📌 置顶区块 (${pinned.length})</div>`);
-    if (!pinned.length) { $sec.append('<div class="mv-empty-hint">无置顶记忆</div>'); return $sec; }
-    pinned.forEach((e, i) => $sec.append(buildItem(e, { showPinOrder: true, isFirst: i===0, isLast: i===pinned.length-1, section:'pinned' })));
+    const arrow = _pinnedCollapsed ? '▶' : '▼';
+    const toggleLabel = _pinnedCollapsed ? '展开' : '收起';
+    const $title = $(`
+      <div class="mv-sec-title mv-sec-collapsible" title="点击收起或展开置顶区块">
+        <span class="mv-vault-arrow">${arrow}</span>
+        <span>📌 置顶区块 (${pinned.length})</span>
+        <span class="mv-toggle-arrow">${toggleLabel}</span>
+      </div>
+    `);
+    $title.on('click', () => {
+        _pinnedCollapsed = !_pinnedCollapsed;
+        renderAll();
+    });
+    $sec.append($title);
+
+    if (!_pinnedCollapsed) {
+        if (!pinned.length) {
+            const hint = _searchQuery.trim()
+                ? `未找到包含「${esc(_searchQuery.trim())}」的置顶记忆`
+                : '无置顶记忆';
+            $sec.append(`<div class="mv-empty-hint">${hint}</div>`);
+        } else {
+            pinned.forEach((e, i) => $sec.append(buildItem(e, { showPinOrder: true, isFirst: i===0, isLast: i===pinned.length-1, section:'pinned' })));
+        }
+    }
     return $sec;
 }
 
@@ -386,7 +501,10 @@ function buildRecentSection(list) {
     send.forEach(e => $sec.append(buildItem(e, { section:'recent' })));
 
     if (!unpinned.length) {
-        $sec.append('<div class="mv-empty-hint">无记忆，可手动新增、扫描聊天，或点右上角 🗂️ 找回历史记忆库</div>');
+        const hint = _searchQuery.trim()
+            ? `未找到包含「${esc(_searchQuery.trim())}」的记忆（点搜索框右侧 × 清空）`
+            : '无记忆，可手动新增、扫描聊天，或点右上角 🗂️ 找回历史记忆库';
+        $sec.append(`<div class="mv-empty-hint">${hint}</div>`);
     }
     return $sec;
 }
@@ -504,15 +622,17 @@ function buildItem(entry, opts={}) {
             $item.append($ord);
         }
 
-        const pinLabel   = entry.pinned ? '取消置顶' : '置顶';
-        const canPin     = section !== 'abandoned';
-        const canRestore = entry.linkedMessageId !== null && entry.linkedMessageId !== undefined && entry.content;
-        const canLocate  = entry.linkedMessageId !== null && entry.linkedMessageId !== undefined;
+        const pinLabel    = entry.pinned ? '取消置顶' : '置顶';
+        const isAbandoned = section === 'abandoned';
+        const canPin      = !isAbandoned;
+        const canRestore  = entry.linkedMessageId !== null && entry.linkedMessageId !== undefined && entry.content;
+        const canLocate   = entry.linkedMessageId !== null && entry.linkedMessageId !== undefined;
         const $act = $(`
           <div class="mv-actions">
             <button class="mv-btn mv-btn-edit" data-id="${esc(entry.id)}">编辑</button>
             <button class="mv-btn mv-btn-copy" data-id="${esc(entry.id)}">复制</button>
             <button class="mv-btn mv-btn-delete" data-id="${esc(entry.id)}">删除</button>
+            ${isAbandoned?`<button class="mv-btn mv-btn-revive" data-id="${esc(entry.id)}">♻️恢复生效</button>`:''}
             ${canPin?`<button class="mv-btn mv-btn-pin" data-id="${esc(entry.id)}">${esc(pinLabel)}</button>`:''}
             ${canRestore?`<button class="mv-btn mv-btn-restore" data-id="${esc(entry.id)}">↩还原</button>`:''}
             ${canLocate?`<button class="mv-btn mv-btn-locate" data-id="${esc(entry.id)}">📍定位</button>`:''}
@@ -547,6 +667,10 @@ function buildItem(entry, opts={}) {
         deleteMemory(_vaultId, entry.id);
         _selectedIds.delete(entry.id); _expandedIds.delete(entry.id);
         triggerSave(); updateInjection(_vaultId, _settings); renderAll(); setStatus('已删除');
+    });
+    $item.find('.mv-btn-revive').on('click', () => {
+        updateMemory(_vaultId, entry.id, { sourceDeleted: false });
+        triggerSave(); updateInjection(_vaultId, _settings); renderAll(); setStatus('✅ 已移出遗弃区并恢复生效');
     });
     $item.find('.mv-btn-pin').on('click', () => {
         if (entry.pinned) {
@@ -601,6 +725,7 @@ function openEditInline(entry) {
       <div class="mv-edit-box">
         <textarea class="mv-textarea">${esc(entry.content)}</textarea>
         <input type="text" class="mv-input mv-edit-tags-input" placeholder="标签（逗号分隔）" value="${esc((entry.tags||[]).join(','))}">
+        <div class="mv-preset-picker-slot"></div>
         <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
           <label style="font-size:11px;color:#5D4E37;">重要度:</label>
           <input type="number" class="mv-num-input" min="0" max="1" step="0.1" value="${entry.importance}">
@@ -618,6 +743,10 @@ function openEditInline(entry) {
         </div>
       </div>
     `);
+
+    const $picker = buildPresetTagsPicker($box.find('.mv-edit-tags-input'));
+    if ($picker) $box.find('.mv-preset-picker-slot').append($picker);
+
     $item.append($box);
     $box.find('.mv-btn-cancel').on('click', () => { $box.remove(); $item.find('.mv-content-full,.mv-actions,.mv-order-row').show(); });
     $box.find('.mv-btn-primary').on('click', () => {
@@ -633,7 +762,6 @@ function openEditInline(entry) {
             const list = loadMemories(_vaultId);
             const filtered = list.filter(e => e.id !== entry.id);
             saveMemories(_vaultId, filtered);
-            // 保留原条目的 id、pinned、pinnedOrder、sourceDeleted 状态
             const newEntry = addMemoryAtFloor(_vaultId, {
                 ...entry,
                 content, tags, importance: imp, date,
@@ -646,6 +774,114 @@ function openEditInline(entry) {
         }
         triggerSave(); updateInjection(_vaultId, _settings); renderAll(); setStatus('✅ 已保存');
     });
+}
+
+// ─── 内联新增（未保存不写库，取消零残留） ─────────────────────────────────
+function addInlineNewEntry() {
+    if (!_vaultId) { setStatus('⚠️ 当前无聊天'); return; }
+    if ($('#mv-new-entry-card').length) {
+        $('#mv-new-entry-card textarea').focus();
+        return;
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    const defImp = _settings.defaultImportance ?? 0.5;
+
+    const $card = $(`
+      <div id="mv-new-entry-card" class="mv-item mv-new-entry-card">
+        <div class="mv-sec-title" style="margin-bottom:6px;">＋ 新增记忆（保存后入库）</div>
+        <div class="mv-edit-box" style="margin-top:0;">
+          <textarea class="mv-textarea" placeholder="输入记忆内容…"></textarea>
+          <input type="text" class="mv-input mv-edit-tags-input" placeholder="标签（逗号分隔，可点下方预设标签）">
+          <div class="mv-preset-picker-slot"></div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+            <label style="font-size:11px;color:#5D4E37;">重要度:</label>
+            <input type="number" class="mv-num-input mv-new-imp" min="0" max="1" step="0.1" value="${defImp}">
+            <label style="font-size:11px;color:#5D4E37;">日期:</label>
+            <input type="date" class="mv-input mv-new-date" value="${today}" style="flex:1;">
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap;">
+            <label style="font-size:11px;color:#5D4E37;">楼层序号:</label>
+            <input type="number" class="mv-num-input mv-new-floor" min="1" step="1" placeholder="留空=末尾" style="width:80px;">
+            <label class="mv-set-label" style="margin-left:auto;">
+              <input type="checkbox" class="mv-new-pinned" ${_activeTab === 'pinned' ? 'checked' : ''}> 直接置顶
+            </label>
+          </div>
+          <div class="mv-modal-actions">
+            <button class="mv-btn mv-btn-cancel">取消</button>
+            <button class="mv-btn mv-btn-primary">保存</button>
+          </div>
+        </div>
+      </div>
+    `);
+
+    const $picker = buildPresetTagsPicker($card.find('.mv-edit-tags-input'));
+    if ($picker) $card.find('.mv-preset-picker-slot').append($picker);
+
+    $card.find('.mv-btn-cancel').on('click', () => $card.remove());
+    $card.find('.mv-btn-primary').on('click', () => {
+        const content = $card.find('textarea').val().trim();
+        if (!content) { setStatus('⚠️ 记忆内容不能为空'); $card.find('textarea').focus(); return; }
+        const tags = $card.find('.mv-edit-tags-input').val().split(',').map(t=>t.trim()).filter(Boolean);
+        const imp  = Math.min(1, Math.max(0, parseFloat($card.find('.mv-new-imp').val()) || 0));
+        const date = $card.find('.mv-new-date').val() || today;
+        const floorVal = $card.find('.mv-new-floor').val().trim();
+        const linkedMessageId = floorVal === '' ? null : (parseInt(floorVal, 10) - 1);
+        const pinned = $card.find('.mv-new-pinned').prop('checked');
+
+        const fields = { content, tags, importance: imp, date, linkedMessageId, pinned, source: 'manual' };
+        const entry = linkedMessageId !== null ? addMemoryAtFloor(_vaultId, fields) : addMemory(_vaultId, fields);
+        _expandedIds.add(entry.id);
+        _highlightIds.add(entry.id);
+        if (pinned && _activeTab !== 'pinned') {
+            _activeTab = 'pinned';
+            _pinnedCollapsed = false;
+            $('.mv-tab').removeClass('mv-tab-active');
+            $('#mv-tab-pinned').addClass('mv-tab-active');
+        } else if (!pinned && _activeTab !== 'recent') {
+            _activeTab = 'recent';
+            $('.mv-tab').removeClass('mv-tab-active');
+            $('#mv-tab-recent').addClass('mv-tab-active');
+        }
+        triggerSave();
+        updateInjection(_vaultId, _settings);
+        renderAll();
+        setTimeout(() => { _highlightIds.delete(entry.id); renderAll(); }, 1800);
+        setStatus('✅ 已新增记忆');
+    });
+
+    $('#mv-body').prepend($card);
+    $('#mv-body').scrollTop(0);
+    $card.find('textarea').focus();
+}
+
+// ─── 实际注入预览弹窗 ─────────────────────────────────────────────────────
+export function openInjectPreviewModal() {
+    if (!_vaultId) { setStatus('⚠️ 当前无聊天'); return; }
+    const list = loadMemories(_vaultId);
+    const pinnedCount = getPinnedSorted(list).length;
+    const n = _settings.recentN ?? 5;
+    const unpinned = getRecentUnpinned(list);
+    const recentCount = n === 0 ? unpinned.length : Math.min(unpinned.length, n);
+    const text = _settings.enabled === false ? '' : buildPromptText(list, _settings);
+    const { position, depth } = resolvePosition(_settings.injectionPosition);
+
+    const posNames = {
+        in_chat: `历史聊天最前 (IN_CHAT, depth=${depth})`,
+        before_prompt: `主提示词之前 (BEFORE_PROMPT, depth=${depth})`,
+        after_char: `主提示词/角色卡之后 (IN_PROMPT, depth=${depth})`,
+        authors_note: `聊天内深度 ${depth} (IN_CHAT)`,
+    };
+    const posLabel = posNames[_settings.injectionPosition] || `position=${position}, depth=${depth}`;
+    const statusLabel = _settings.enabled === false ? '⏸️ 已关闭（不会注入）' : '✅ 已启用';
+    const charLen = text.length;
+
+    $('#mv-inject-preview-meta').html(`
+      <div><b>状态：</b>${statusLabel} ｜ <b>位置：</b>${esc(posLabel)}</div>
+      <div><b>本次注入：</b>置顶 ${pinnedCount} 条 + 最近 ${recentCount} 条（共 ${pinnedCount + recentCount} 条，约 ${charLen} 字）</div>
+    `);
+    $('#mv-inject-preview-text').val(text || '（当前不会向 AI 注入任何记忆内容）');
+    $('#mv-inject-preview-modal').addClass('mv-modal-active');
 }
 
 // ─── 历史记忆库管理 / 重新绑定弹窗 ────────────────────────────────────────
@@ -780,14 +1016,37 @@ function syncMultibar() {
     $('#mv-sel-count').text(count ? `已选 ${count} 条` : '');
     $('#mv-merge-btn').toggle(count >= 2);
     $('#mv-del-sel-btn').toggle(count >= 1);
+    const inAbandoned = _activeTab === 'abandoned';
+    $('#mv-batch-pin-btn').toggle(count >= 1 && !inAbandoned);
+    $('#mv-batch-unpin-btn').toggle(count >= 1 && !inAbandoned);
 }
 
 // ─── 面板事件 ─────────────────────────────────────────────────────────────
 function bindPanelEvents() {
     $('#mv-close-btn').on('click', hidePanel);
     $('#mv-settings-btn').on('click', () => switchView(_view === 'settings' ? 'main' : 'settings'));
+    $('#mv-preview-inject-btn').on('click', openInjectPreviewModal);
     $('#mv-vaults-btn, #mv-open-vaults-btn').on('click', openVaultsModal);
+
+    // 停用横幅快捷开启（复用 #mv-set-enabled 的 change 逻辑）
+    $('#mv-quick-enable-btn').on('click', () => {
+        $('#mv-set-enabled').prop('checked', true).trigger('change');
+        renderAll();
+        setStatus('✅ 已开启记忆注入');
+    });
+
+    // 弹窗关闭 & 点击半透明遮罩层关闭
     $('#mv-vaults-close').on('click', () => $('#mv-vaults-modal').removeClass('mv-modal-active'));
+    $('#mv-inject-preview-close').on('click', () => $('#mv-inject-preview-modal').removeClass('mv-modal-active'));
+    $('#mv-inject-preview-copy').on('click', () => {
+        const txt = $('#mv-inject-preview-text').val();
+        navigator.clipboard?.writeText(txt).catch(() => {});
+        setStatus('✅ 已复制注入文本');
+    });
+    $('.mv-modal').on('click', function(e) {
+        if (e.target === this) $(this).removeClass('mv-modal-active');
+    });
+
     $('#mv-vaults-search').on('input', function() {
         _vaultSearch = $(this).val();
         renderVaultsList();
@@ -802,16 +1061,61 @@ function bindPanelEvents() {
     });
 
     $('#mv-pin-sort').on('change', function() { _pinnedSort = $(this).val(); renderAll(); });
-    $('#mv-search-input').on('input', function() { _searchQuery = $(this).val(); renderAll(); });
+    $('#mv-search-input').on('input', function() {
+        _searchQuery = $(this).val();
+        $('#mv-search-clear').toggle(_searchQuery.length > 0);
+        renderAll();
+    });
+    $('#mv-search-clear').on('click', () => {
+        _searchQuery = '';
+        $('#mv-search-input').val('').focus();
+        $('#mv-search-clear').hide();
+        renderAll();
+    });
     $('#mv-add-btn').on('click', addInlineNewEntry);
 
-    // 仅全选当前 Tab 可见条目，避免误选记忆库或遗弃区
+    // 仅全选当前 Tab 可见条目
     $('#mv-sel-all').on('click', () => {
         getCurrentTabVisibleIds().forEach(id => _selectedIds.add(id));
         renderAll();
         syncMultibar();
     });
     $('#mv-sel-none').on('click', () => { _selectedIds.clear(); renderAll(); syncMultibar(); });
+
+    // 批量置顶 / 取消置顶
+    $('#mv-batch-pin-btn').on('click', () => {
+        if (!_vaultId || !_selectedIds.size) return;
+        const list = loadMemories(_vaultId);
+        let changed = 0;
+        for (const e of list) {
+            if (_selectedIds.has(e.id) && !e.sourceDeleted && !e.pinned) {
+                e.pinned = true;
+                e.pinnedOrder = null;
+                changed++;
+            }
+        }
+        if (changed > 0) saveMemories(_vaultId, list);
+        _selectedIds.clear();
+        triggerSave(); updateInjection(_vaultId, _settings); renderAll();
+        setStatus(`✅ 已批量置顶 ${changed} 条`);
+    });
+    $('#mv-batch-unpin-btn').on('click', () => {
+        if (!_vaultId || !_selectedIds.size) return;
+        const list = loadMemories(_vaultId);
+        let changed = 0;
+        for (const e of list) {
+            if (_selectedIds.has(e.id) && e.pinned) {
+                e.pinned = false;
+                e.pinnedOrder = null;
+                changed++;
+            }
+        }
+        if (changed > 0) saveMemories(_vaultId, list);
+        _selectedIds.clear();
+        triggerSave(); updateInjection(_vaultId, _settings); renderAll();
+        setStatus(`✅ 已取消置顶 ${changed} 条`);
+    });
+
     $('#mv-merge-btn').on('click', openMergeModal);
     $('#mv-del-sel-btn').on('click', () => {
         if (!confirm(`删除选中的 ${_selectedIds.size} 条？`)) return;
@@ -857,26 +1161,6 @@ function bindPanelEvents() {
         triggerSave();
         setStatus('✅ 设置已储存');
     });
-}
-
-// ─── 内联新增（替代弹窗）─────────────────────────────────────────────────
-function addInlineNewEntry() {
-    if (!_vaultId) return;
-    const entry = addMemory(_vaultId, {
-        content: '', tags: [],
-        importance: _settings.defaultImportance ?? 0.5,
-        source: 'manual',
-    });
-    _expandedIds.add(entry.id);
-    if (_activeTab !== 'recent') {
-        _activeTab = 'recent';
-        $('.mv-tab').removeClass('mv-tab-active');
-        $('.mv-tab[data-tab="recent"]').addClass('mv-tab-active');
-    }
-    triggerSave();
-    updateInjection(_vaultId, _settings);
-    renderAll();
-    setTimeout(() => openEditInline(entry), 50);
 }
 
 function openMergeModal() {

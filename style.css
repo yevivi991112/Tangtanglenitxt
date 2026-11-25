@@ -34,15 +34,26 @@
     flex-shrink: 0;
 }
 .mv-title { font-weight: 700; color: #5D4E37; font-size: 15px; }
-.mv-header-actions { display: flex; gap: 4px; }
+.mv-header-actions { display: flex; gap: 2px; }
 .mv-hbtn {
     background: transparent; border: none; font-size: 16px; cursor: pointer;
-    padding: 6px 8px; border-radius: 4px; min-width: 40px; min-height: 40px;
+    padding: 6px 8px; border-radius: 4px; min-width: 36px; min-height: 36px;
     display: flex; align-items: center; justify-content: center;
     color: #5D4E37; transition: background 0.2s;
 }
 .mv-hbtn:hover  { background: rgba(0,0,0,0.10); }
 .mv-hbtn:active { background: rgba(0,0,0,0.20); }
+
+/* ─── 停用提示横幅 ────────────────────────────────────── */
+.mv-disabled-banner {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 6px 12px; background: #FFECB3; color: #795548;
+    border-bottom: 1px solid #FFE082; font-size: 12px; flex-shrink: 0;
+}
+.mv-banner-btn {
+    padding: 4px 10px !important; min-height: 26px !important;
+    background: #C8A250 !important; color: #fff !important; border-color: #B8956A !important;
+}
 
 /* ─── 主视图容器（flex column 铺满剩余高度） ─────────── */
 .mv-flex-col {
@@ -60,11 +71,27 @@
     border-bottom: 1px solid #D2B48C; flex-shrink: 0; flex-wrap: wrap;
 }
 .mv-label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #5D4E37; white-space: nowrap; }
+.mv-search-wrap {
+    position: relative; flex: 1; min-width: 110px;
+    display: flex; align-items: center;
+}
+.mv-search-input { padding-right: 26px !important; }
+.mv-search-clear {
+    position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+    background: transparent; border: none; cursor: pointer;
+    color: #8B7355; font-size: 16px; line-height: 1;
+    width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+}
+.mv-search-clear:hover { background: rgba(210,180,140,0.35); color: #3D2B1F; }
+
 .mv-multibar {
-    display: flex; align-items: center; gap: 6px;
+    display: flex; align-items: center; gap: 5px;
     padding: 6px 12px; background: #F0DCC5;
     border-bottom: 1px solid #D2B48C; flex-shrink: 0; flex-wrap: wrap;
 }
+.mv-multibar .mv-tbtn { padding: 4px 8px; min-height: 28px; font-size: 11px; }
+.mv-pin-batch-btn { background: #FFF3E0; border-color: #FFB74D; color: #E65100; }
 
 /* ─── 滚动体 ──────────────────────────────────────────── */
 .mv-body {
@@ -121,9 +148,9 @@
     padding: 4px 2px 5px; border-bottom: 1px dashed #D2B48C;
     margin-bottom: 6px; display: flex; align-items: center; gap: 4px;
 }
-.mv-sec-collapsible { cursor: pointer; }
+.mv-sec-collapsible { cursor: pointer; user-select: none; }
 .mv-sec-collapsible:hover { color: #5D4E37; }
-.mv-toggle-arrow { margin-left: auto; font-size: 10px; }
+.mv-toggle-arrow { margin-left: auto; font-size: 11px; font-weight: 400; color: #A09080; }
 .mv-empty-hint { text-align: center; color: #A09080; font-size: 12px; padding: 10px 0; }
 
 /* ─── 记忆条目 ────────────────────────────────────────── */
@@ -135,18 +162,13 @@
 .mv-item.mv-pinned  { border-color: #C8A250; background: #FFF5D6; box-shadow: 0 0 0 1px #C8A250; }
 .mv-item.mv-muted   { opacity: 0.5; border-style: dashed; border-color: #C8B89A; background: #F5EDE0; }
 .mv-item.mv-muted:hover { opacity: 0.85; }
+.mv-new-entry-card  { border: 2px solid #C8A250; background: #FFFDF5; }
 
 .mv-item-top {
     display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
     cursor: pointer;
 }
 
-/* 旧记忆分隔线 */
-.mv-old-divider {
-    text-align: center; font-size: 11px; color: #A09080;
-    padding: 6px 0; border-top: 1px dashed #D2B48C;
-    margin: 4px 0;
-}
 .mv-checkbox { width: 16px; height: 16px; flex-shrink: 0; accent-color: #C8A250; }
 .mv-floor    { font-size: 11px; color: #A07840; font-weight: 600; white-space: nowrap; }
 .mv-date     { font-size: 11px; color: #8B7355; white-space: nowrap; }
@@ -168,6 +190,24 @@
     margin: 8px 0; font-size: 13px; color: #3D2B1F;
     white-space: pre-wrap; word-break: break-all; line-height: 1.5;
     max-height: 200px; overflow-y: auto; -webkit-overflow-scrolling: touch;
+}
+
+/* ─── 预设标签点选区（编辑/新增框内） ─────────────────── */
+.mv-preset-picker {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+    margin-top: 2px;
+}
+.mv-preset-picker-label {
+    font-size: 11px; color: #8B7355; margin-right: 2px;
+}
+.mv-preset-pick {
+    background: #F5E6D3; color: #5D4E37; border: 1px solid #D2B48C;
+    border-radius: 12px; padding: 2px 8px; font-size: 11px; cursor: pointer;
+    transition: all 0.15s;
+}
+.mv-preset-pick:hover { background: #E8D5B0; }
+.mv-preset-pick.mv-preset-pick-active {
+    background: #C8A250; color: #fff; border-color: #B8956A; font-weight: 600;
 }
 
 /* ─── pinnedOrder 操作行 ──────────────────────────────── */
@@ -194,19 +234,11 @@
 .mv-btn-edit    { background: #87CEEB; color: #1A4A6B; }
 .mv-btn-copy    { background: #C8E6C9; color: #1B5E20; }
 .mv-btn-delete  { background: #FFCDD2; color: #B71C1C; }
+.mv-btn-revive  { background: #DCEDC8; color: #33691E; border: 1px solid #AED581; }
 .mv-btn-pin     { background: #FFF3E0; color: #E65100; border: 1px solid #FFB74D; }
 .mv-btn-restore { background: #E8D5B0; color: #5D4E37; border: 1px solid #D2B48C; }
 .mv-btn-primary { background: #C8A250; color: white; }
 .mv-btn-cancel  { background: #A9A9A9; color: white; }
-
-/* ─── 展开/折叠旧记忆按钮 ────────────────────────────── */
-.mv-expand-btn {
-    width: 100%; padding: 10px; border: 1px dashed #D2B48C; border-radius: 8px;
-    background: transparent; color: #8B7355; font-size: 12px; cursor: pointer;
-    text-align: center; min-height: 40px; margin-bottom: 6px;
-    touch-action: manipulation; transition: background 0.2s;
-}
-.mv-expand-btn:hover { background: rgba(210,180,140,0.15); }
 
 /* ─── 工具栏/设置按钮 ─────────────────────────────────── */
 .mv-tbtn {
@@ -232,7 +264,7 @@
     flex: 1; padding: 8px 4px; border: none; background: transparent;
     font-size: 12px; color: #8B7355; cursor: pointer;
     border-bottom: 2px solid transparent; transition: all 0.2s;
-    min-height: 36px; text-align: center;
+    min-height: 36px; text-align: center; white-space: nowrap;
 }
 .mv-tab:hover { color: #5D4E37; }
 .mv-tab.mv-tab-active {
@@ -253,7 +285,7 @@
 .mv-vault-header {
     display: flex; align-items: center; gap: 6px;
     padding: 8px 4px; cursor: pointer; font-size: 12px;
-    font-weight: 600; color: #8B7355;
+    font-weight: 600; color: #8B7355; user-select: none;
 }
 .mv-vault-header:hover { color: #5D4E37; }
 .mv-vault-arrow { font-size: 10px; flex-shrink: 0; }
@@ -264,7 +296,7 @@
     color: #A09080;
 }
 
-/* ─── 历史记忆库管理弹窗 ──────────────────────────────── */
+/* ─── 历史记忆库管理 & 注入预览弹窗 ───────────────────── */
 .mv-vaults-modal-box {
     width: min(440px, calc(100vw - 20px));
 }
@@ -272,6 +304,10 @@
     background: #FFF8E7; border: 1px dashed #C8A250; border-radius: 8px;
     padding: 8px 10px; font-size: 12px; color: #5D4E37; line-height: 1.5;
     word-break: break-all;
+}
+.mv-inject-preview-ta {
+    min-height: 200px; max-height: 50dvh; font-size: 12px; line-height: 1.5;
+    background: #FFFDF8;
 }
 .mv-vaults-list {
     max-height: 52dvh; overflow-y: auto;
