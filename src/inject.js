@@ -6,43 +6,84 @@
  * - extension_prompt_types.IN_PROMPT     = 0  （主提示词 / 角色卡定义之后）
  * - extension_prompt_types.IN_CHAT       = 1  （聊天记录中，配合 depth 控制位置）
  * - extension_prompt_types.BEFORE_PROMPT = 2  （主提示词之前）
+ * - 多分区注入时，每条记忆使用其所属分区的自定义标签名包裹。
  */
 
-import { getPinnedSorted, getRecentUnpinned, loadMemories } from './memory.js';
+import {
+    getPinnedSorted, getRecentUnpinned, loadMemories,
+    normalizeZones, getEntryZoneId,
+} from './memory.js';
 
 const INJECTION_KEY = 'memory-vault';
 
 export function buildPromptText(list, settings) {
     const { recentN = 5, pinnedFirst = true, injectFormat = 'lenitxt' } = settings;
+    const zones = normalizeZones(settings.zones);
+    const zoneTagMap = new Map(zones.map(z => [z.id, z.tag]));
+    const defaultTag = zones[0].tag;
 
     const pinned = getPinnedSorted(list);
-    const unpinned = getRecentUnpinned(list, recentN);
+    const unpinned = getRecentUnpinned(list);
     const recent = recentN === 0 ? unpinned : unpinned.slice(-recentN);
 
     const ordered = pinnedFirst
         ? [...pinned, ...recent]
         : [...recent, ...pinned];
 
-    // 没有可注入记忆时返回空字符串，避免注入空的 <Lenitxt></Lenitxt> 标签
     if (!ordered.length) return '';
 
+    const formatLine = (e, lastDate) => {
+        const dateStr = (e.date === lastDate) ? '' : e.date;
+        const tagsStr = (e.tags || []).join(',');
+        return dateStr
+            ? `${dateStr}|${tagsStr}|${e.content}`
+            : `|${tagsStr}|${e.content}`;
+    };
+
+    if (injectFormat === 'plain') {
+        const lines = [];
+        let lastDate = null;
+        for (const e of ordered) {
+            lines.push(formatLine(e, lastDate));
+            lastDate = e.date;
+        }
+        return lines.join('\n');
+    }
+
+    if (injectFormat === 'lenitxt_single') {
+        // 按所属分区标签分组包裹；单分区时仅包裹一次，多分区时各自用对应标签包裹
+        const groups = [];
+        for (const e of ordered) {
+            const zId = getEntryZoneId(e, zones);
+            const tag = zoneTagMap.get(zId) || defaultTag;
+            let grp = groups.find(g => g.tag === tag);
+            if (!grp) {
+                grp = { tag, entries: [] };
+                groups.push(grp);
+            }
+            grp.entries.push(e);
+        }
+        return groups.map(g => {
+            const lines = [];
+            let lastDate = null;
+            for (const e of g.entries) {
+                lines.push(formatLine(e, lastDate));
+                lastDate = e.date;
+            }
+            return `<${g.tag}>\n${lines.join('\n')}\n</${g.tag}>`;
+        }).join('\n');
+    }
+
+    // 默认 'lenitxt' 模式：逐条用所属分区的自定义标签包裹
     const lines = [];
     let lastDate = null;
     for (const e of ordered) {
-        const dateStr = (e.date === lastDate) ? '' : e.date;
-        const tagsStr = (e.tags || []).join(',');
-        const plainLine = dateStr
-            ? `${dateStr}|${tagsStr}|${e.content}`
-            : `|${tagsStr}|${e.content}`;
-        if (injectFormat === 'plain' || injectFormat === 'lenitxt_single') {
-            lines.push(plainLine);
-        } else {
-            lines.push(`<Lenitxt>${plainLine}</Lenitxt>`);
-        }
+        const zId = getEntryZoneId(e, zones);
+        const tag = zoneTagMap.get(zId) || defaultTag;
+        lines.push(`<${tag}>${formatLine(e, lastDate)}</${tag}>`);
         lastDate = e.date;
     }
-    const joined = lines.join('\n');
-    return injectFormat === 'lenitxt_single' ? `<Lenitxt>\n${joined}\n</Lenitxt>` : joined;
+    return lines.join('\n');
 }
 
 function getSetExtensionPrompt() {
@@ -87,10 +128,10 @@ export function resolvePosition(pos) {
     const BEFORE_PROMPT = types?.BEFORE_PROMPT ?? 2;
 
     const MAP = {
-        in_chat:       { position: IN_CHAT,       depth: 9999 }, // 聊天记录最前方
-        before_prompt: { position: BEFORE_PROMPT, depth: 0 },    // 主提示词之前
-        after_char:    { position: IN_PROMPT,     depth: 0 },    // 角色卡 / 主提示词之后
-        authors_note:  { position: IN_CHAT,       depth: 4 },    // 聊天内深度 4（兼容作者注释位置）
+        in_chat:       { position: IN_CHAT,       depth: 9999 },
+        before_prompt: { position: BEFORE_PROMPT, depth: 0 },
+        after_char:    { position: IN_PROMPT,     depth: 0 },
+        authors_note:  { position: IN_CHAT,       depth: 4 },
     };
     return MAP[pos] ?? { position: IN_CHAT, depth: 9999 };
 }

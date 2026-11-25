@@ -1,13 +1,15 @@
 /**
- * memory.js — 记忆条目 CRUD、快照、还原、以及基于 chatMetadata 的防丢绑定与分支复制
+ * memory.js — 记忆条目 CRUD、快照、还原、多分区捕获、楼层排序、以及基于 chatMetadata 的防丢绑定
  *
  * 设计不变量：
- * 1. 每个聊天在 ST 的 chatMetadata.memory_vault 中持久化 { vaultId, lastChatId }。
- *    - 酒馆内重命名聊天（CHAT_RENAMED）时，沿用同一个 vaultId，仅更新 lastChatId 与 vault_meta。
- *    - 创建分支（Branch）时，ST 会复制原聊天的 chatMetadata；检测到 lastChatId !== currentChatId
- *      且未命中近期改名事件时，自动为新分支创建独立 vaultId 并完整复制原记忆库，保证分支互不串戏。
- * 2. 兼容历史数据：首次打开老聊天时若 chatMetadata 尚无记录，优先沿用旧 key（chat_<chatId> 或群聊旧 key chat_group_<groupId>）。
- * 3. 编辑记忆楼层号时必须保留原有 pinned / pinnedOrder / sourceDeleted 状态。
+ * 1. 每个聊天在 ST 的 chatMetadata.memory_vault 中持久化 { vaultId, lastChatId }：
+ *    - 酒馆内重命名（CHAT_RENAMED）无缝沿用原库；
+ *    - 创建分支（Branch）自动复制一份独立记忆库，互不串戏。
+ * 2. 统一按楼层顺序（linkedMessageId 升序）排列：
+ *    - 「最近 N 条」严格按楼层顺序排序，无楼层手动记忆排在最后；
+ *    - 「置顶区块」未手动设序号时默认按楼层顺序排，拖动或点 ↑/↓ 时规范化为连续 pinnedOrder。
+ * 3. 多分区支持：每条记忆通过 zoneId 归属到自定义分区（缺省归入首个分区，100% 兼容老数据），
+ *    单次扫描可同时捕获多个分区的自定义标签块，支持按分区配置「捕获时默认置顶」。
  */
 
 import {
@@ -17,6 +19,64 @@ import {
 } from './storage.js';
 
 const CHAT_META_FIELD = 'memory_vault';
+
+export const DEFAULT_ZONES = [
+    { id: 'default', name: '记忆', tag: 'Lenitxt', defaultPinned: false },
+];
+
+// ─── 分区工具 ─────────────────────────────────────────────────────────────
+
+export function normalizeZones(zones) {
+    if (!Array.isArray(zones) || !zones.length) {
+        return DEFAULT_ZONES.map(z => ({ ...z }));
+    }
+    const valid = zones
+        .filter(z => z && typeof z === 'object' && z.id && String(z.tag || '').trim())
+        .map(z => ({
+            id: String(z.id),
+            name: String(z.name || z.tag).trim() || '未命名分区',
+            tag: String(z.tag).trim(),
+            defaultPinned: Boolean(z.defaultPinned),
+        }));
+    return valid.length ? valid : DEFAULT_ZONES.map(z => ({ ...z }));
+}
+
+export function getEntryZoneId(entry, zones = DEFAULT_ZONES) {
+    const list = normalizeZones(zones);
+    if (entry?.zoneId && list.some(z => z.id === entry.zoneId)) {
+        return entry.zoneId;
+    }
+    return list[0].id;
+}
+
+export function escapeRegex(str) {
+    return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function hasAnyZoneTag(mesText, zones = DEFAULT_ZONES) {
+    if (!mesText) return false;
+    const list = normalizeZones(zones);
+    return list.some(z => {
+        const re = new RegExp(`<${escapeRegex(z.tag)}>`, 'i');
+        return re.test(mesText);
+    });
+}
+
+// ─── 统一楼层比较器（linkedMessageId 升序，无楼层排最后） ─────────────────
+
+export function compareByFloor(a, b) {
+    const hasA = a.linkedMessageId !== null && a.linkedMessageId !== undefined;
+    const hasB = b.linkedMessageId !== null && b.linkedMessageId !== undefined;
+    if (hasA && hasB) {
+        if (a.linkedMessageId !== b.linkedMessageId) return a.linkedMessageId - b.linkedMessageId;
+        const ba = a.originalBlockIndex ?? 0;
+        const bb = b.originalBlockIndex ?? 0;
+        if (ba !== bb) return ba - bb;
+    } else if (hasA !== hasB) {
+        return hasA ? -1 : 1;
+    }
+    return (a.timestamp || 0) - (b.timestamp || 0);
+}
 
 // ─── ID 生成 ───────────────────────────────────────────────────────────────
 
@@ -104,15 +164,6 @@ export function writeChatVaultMeta(vaultId, chatId) {
     } catch { return false; }
 }
 
-/**
- * 解析当前聊天对应的有效 vaultId，并自动处理：
- * - 普通打开 & 历史旧数据兼容
- * - 酒馆改名（recentRename 命中时直接沿用原 vaultId）
- * - 分支聊天（chatMetadata 携带旧 chatId 的 vaultId 且非改名 -> 自动复制为独立新 vaultId）
- *
- * @param {object|null} recentRename - { oldFileName, newFileName, ts }
- * @returns {{ vaultId: string|null, chatId: string|null, action: 'none'|'existing'|'renamed'|'branched'|'new', copiedCount?: number }}
- */
 export function resolveActiveVault(recentRename = null) {
     const currentChatId = getCurrentChatId();
     if (!currentChatId) return { vaultId: null, chatId: null, action: 'none' };
@@ -126,12 +177,10 @@ export function resolveActiveVault(recentRename = null) {
         && (Date.now() - (recentRename.ts || 0) < 15000)
     );
 
-    // 情况 1：chatMetadata 中已有绑定记录
     if (meta?.vaultId) {
         const metaVaultId = String(meta.vaultId);
         const lastChatId = meta.lastChatId ? String(meta.lastChatId) : null;
 
-        // 1a. 同一个聊天，或刚刚在酒馆内被重命名
         if (!lastChatId || lastChatId === currentChatId || (isRecentRename && recentRename.oldFileName === lastChatId)) {
             if (lastChatId !== currentChatId) {
                 writeChatVaultMeta(metaVaultId, currentChatId);
@@ -144,8 +193,6 @@ export function resolveActiveVault(recentRename = null) {
             };
         }
 
-        // 1b. lastChatId !== currentChatId 且不是改名 -> 判定为分支（Branch）或手工复制的 .jsonl
-        // 按设计：自动复制一份独立记忆库，保证分支与原聊天互不串戏
         const srcMemories = loadMemories(metaVaultId);
         const newVaultId = genVaultId('branch');
         const copiedCount = srcMemories.length ? cloneMemoriesToNewVault(metaVaultId, newVaultId) : 0;
@@ -159,8 +206,6 @@ export function resolveActiveVault(recentRename = null) {
         };
     }
 
-    // 情况 2：chatMetadata 中尚无记录（老聊天首次升级，或刚改名的老聊天）
-    // 2a. 如果是刚改名的老聊天，旧文件名对应的记忆库还在 chat_<oldFileName> 下
     if (isRecentRename && recentRename.oldFileName) {
         const oldVaultId = String(recentRename.oldFileName);
         const oldMemories = loadMemories(oldVaultId);
@@ -171,7 +216,6 @@ export function resolveActiveVault(recentRename = null) {
         }
     }
 
-    // 2b. 检查当前 chatId 对应的老数据
     const directMemories = loadMemories(currentChatId);
     if (directMemories.length > 0) {
         writeChatVaultMeta(currentChatId, currentChatId);
@@ -179,7 +223,6 @@ export function resolveActiveVault(recentRename = null) {
         return { vaultId: currentChatId, chatId: currentChatId, action: 'existing' };
     }
 
-    // 2c. 群聊兼容：检查旧版 group_<groupId> key
     const legacyGroupId = getLegacyGroupVaultId();
     if (legacyGroupId && legacyGroupId !== currentChatId) {
         const legacyMemories = loadMemories(legacyGroupId);
@@ -190,13 +233,9 @@ export function resolveActiveVault(recentRename = null) {
         }
     }
 
-    // 2d. 全新空白聊天：暂不强制落盘 chatMetadata（等真正写入记忆时再落盘），先使用 currentChatId 作为 vaultId
     return { vaultId: currentChatId, chatId: currentChatId, action: 'new' };
 }
 
-/**
- * 手动将当前聊天重新绑定到某个已存在的历史记忆库
- */
 export function bindCurrentChatToVault(targetVaultId) {
     const currentChatId = getCurrentChatId();
     if (!currentChatId || !targetVaultId) return false;
@@ -206,9 +245,6 @@ export function bindCurrentChatToVault(targetVaultId) {
     return true;
 }
 
-/**
- * 将历史记忆库的内容合并到目标记忆库（按 id 或同楼层同原文去重）
- */
 export function mergeVaultInto(fromVaultId, toVaultId) {
     if (!fromVaultId || !toVaultId || fromVaultId === toVaultId) return 0;
     const source = loadMemories(fromVaultId);
@@ -246,7 +282,6 @@ export function saveMemories(vaultId, list) {
     mvWrite(chatKey(vaultId), list);
     const currentChatId = getCurrentChatId();
     const charName = getCurrentCharName();
-    // 只要往当前聊天的记忆库写过数据，就确保 chatMetadata 已绑定，以后改名绝不丢
     const meta = readChatVaultMeta();
     if (currentChatId && (!meta || meta.vaultId !== vaultId || meta.lastChatId !== currentChatId)) {
         writeChatVaultMeta(vaultId, currentChatId);
@@ -257,7 +292,7 @@ export function saveMemories(vaultId, list) {
     });
 }
 
-// ─── 快照（支持增量合并，防止后续扫描覆盖先前楼层的原文快照） ─────────────
+// ─── 快照 ─────────────────────────────────────────────────────────────────
 
 export function saveDbSnapshot(vaultId) {
     const current = loadMemories(vaultId);
@@ -272,11 +307,9 @@ export function restoreDbSnapshot(vaultId) {
 }
 
 export function saveChatSnapshot(vaultId, changedMsgs, mergeExisting = true) {
-    // changedMsgs: { [mesid]: originalText }
     if (!vaultId || !changedMsgs || !Object.keys(changedMsgs).length) return;
     if (mergeExisting) {
         const prev = getChatSnapshot(vaultId);
-        // 保留最早一份原文快照（同一个楼层若已被捕获过一次，不覆盖最初的完整原文）
         const merged = { ...changedMsgs, ...prev };
         mvWrite(chatSnapshotKey(vaultId), merged);
     } else {
@@ -307,11 +340,12 @@ export function parseAiFormat(text) {
     };
 }
 
-// ─── 从消息文本提取 <Lenitxt> 块 ─────────────────────────────────────────
+// ─── 从消息文本提取单个或多分区标签块 ─────────────────────────────────────
 
-export function extractBlocks(mesText) {
+export function extractBlocks(mesText, tagName = 'Lenitxt') {
     const blocks = [];
-    const re = /<Lenitxt>([\s\S]*?)<\/Lenitxt>/gi;
+    const safeTag = escapeRegex(tagName);
+    const re = new RegExp(`<${safeTag}>([\\s\\S]*?)<\\/${safeTag}>`, 'gi');
     let m, idx = 0;
     while ((m = re.exec(mesText || '')) !== null) {
         blocks.push({
@@ -319,9 +353,37 @@ export function extractBlocks(mesText) {
             innerText:      m[1].trim(),
             startPos:       m.index,
             blockIndex:     idx++,
+            tag:            tagName,
         });
     }
     return blocks;
+}
+
+/**
+ * 一次性提取消息中所有配置分区的标签块，按出现位置 startPos 升序返回
+ */
+export function extractBlocksForZones(mesText, zones = DEFAULT_ZONES) {
+    const list = normalizeZones(zones);
+    const all = [];
+    for (const zone of list) {
+        const safeTag = escapeRegex(zone.tag);
+        const re = new RegExp(`<${safeTag}>([\\s\\S]*?)<\\/${safeTag}>`, 'gi');
+        let m, idx = 0;
+        while ((m = re.exec(mesText || '')) !== null) {
+            all.push({
+                originalText:  m[0],
+                innerText:     m[1].trim(),
+                startPos:      m.index,
+                blockIndex:    idx++,
+                zoneId:        zone.id,
+                zoneName:      zone.name,
+                tag:           zone.tag,
+                defaultPinned: Boolean(zone.defaultPinned),
+            });
+        }
+    }
+    all.sort((a, b) => a.startPos - b.startPos);
+    return all;
 }
 
 // ─── 写入一条新记忆 ───────────────────────────────────────────────────────
@@ -336,6 +398,7 @@ export function addMemory(vaultId, fields) {
         date:               fields.date ?? new Date().toISOString().slice(0, 10),
         timestamp:          fields.timestamp ?? Date.now(),
         source:             fields.source ?? 'manual',
+        zoneId:             fields.zoneId ?? 'default',
         pinned:             Boolean(fields.pinned),
         pinnedOrder:        fields.pinnedOrder ?? null,
         linkedMessageId:    fields.linkedMessageId ?? null,
@@ -358,6 +421,7 @@ export function addMemoryAtFloor(vaultId, fields) {
         date:               fields.date ?? new Date().toISOString().slice(0, 10),
         timestamp:          fields.timestamp ?? Date.now(),
         source:             fields.source ?? 'manual',
+        zoneId:             fields.zoneId ?? 'default',
         pinned:             Boolean(fields.pinned),
         pinnedOrder:        fields.pinnedOrder ?? null,
         linkedMessageId:    fields.linkedMessageId ?? null,
@@ -369,7 +433,6 @@ export function addMemoryAtFloor(vaultId, fields) {
     if (targetId === null || targetId === undefined) {
         list.push(entry);
     } else {
-        // 找到最后一个 linkedMessageId <= targetId 的位置，插在其后
         let insertPos = 0;
         for (let i = 0; i < list.length; i++) {
             const lid = list[i].linkedMessageId;
@@ -425,6 +488,7 @@ export function mergeMemories(vaultId, ids, mergedContent) {
         date:               earliestDate,
         timestamp:          Date.now(),
         source:             'manual',
+        zoneId:             sources[0].zoneId ?? 'default',
         pinned:             false,
         pinnedOrder:        null,
         linkedMessageId:    latestLinkedId,
@@ -439,20 +503,8 @@ export function mergeMemories(vaultId, ids, mergedContent) {
     return entry;
 }
 
-// ─── 精确从消息文本删除某块（从后往前） ──────────────────────────────────
+// ─── 判断某楼层中的某个标签块是否已入库 ──────────────────────────────────
 
-export function removeBlockFromText(mesText, block) {
-    const actual = mesText.substring(block.startPos, block.startPos + block.originalText.length);
-    if (actual === block.originalText) {
-        return mesText.substring(0, block.startPos) + mesText.substring(block.startPos + block.originalText.length);
-    }
-    return mesText.replace(block.originalText, '');
-}
-
-/**
- * 判断某楼层中的某个 <Lenitxt> 块是否已在有效记忆中存在
- * 修复：不再仅靠 originalBlockIndex（删块后补写会重置为 0），改按同楼层且原文完全相同去重
- */
 export function isBlockAlreadyStored(existingList, mesid, block) {
     return existingList.some(e =>
         !e.sourceDeleted
@@ -461,16 +513,15 @@ export function isBlockAlreadyStored(existingList, mesid, block) {
     );
 }
 
-// ─── 自动扫描并入库（单条消息），返回新增条目与修改后文本 ──────────────────
+// ─── 自动扫描并入库（单条消息，支持多分区同时捕获） ───────────────────────
 
-export function scanAndStoreMessage(vaultId, mesid, mesText, existingList, defaultImportance) {
-    const blocks = extractBlocks(mesText);
+export function scanAndStoreMessage(vaultId, mesid, mesText, existingList, defaultImportance, zones = DEFAULT_ZONES) {
+    const blocks = extractBlocksForZones(mesText, zones);
     if (!blocks.length) return { newEntries: [], modifiedText: mesText };
 
     const newBlocks = blocks.filter(b => !isBlockAlreadyStored(existingList, mesid, b));
     if (!newBlocks.length) return { newEntries: [], modifiedText: mesText };
 
-    // 计算该楼层当前最大的 originalBlockIndex，补写的新块顺延编号
     let nextBlockIdx = existingList
         .filter(e => e.linkedMessageId === mesid && typeof e.originalBlockIndex === 'number')
         .reduce((max, e) => Math.max(max, e.originalBlockIndex), -1) + 1;
@@ -485,7 +536,8 @@ export function scanAndStoreMessage(vaultId, mesid, mesText, existingList, defau
             date:               parsed ? parsed.date : new Date().toISOString().slice(0, 10),
             timestamp:          Date.now(),
             source:             'auto',
-            pinned:             false,
+            zoneId:             block.zoneId || 'default',
+            pinned:             Boolean(block.defaultPinned),
             pinnedOrder:        null,
             linkedMessageId:    mesid,
             originalBlockIndex: nextBlockIdx++,
@@ -512,42 +564,46 @@ export function scanAndStoreMessage(vaultId, mesid, mesText, existingList, defau
 
 // ─── 还原单条记忆到聊天 ───────────────────────────────────────────────────
 
-export function restoreOneToChat(vaultId, memoryId) {
+export function restoreOneToChat(vaultId, memoryId, zones = DEFAULT_ZONES) {
     const ctx = SillyTavern.getContext();
     const list = loadMemories(vaultId);
     const entry = list.find(e => e.id === memoryId);
     if (!entry || entry.linkedMessageId === null || entry.linkedMessageId === undefined) return false;
     const msg = ctx.chat?.[entry.linkedMessageId];
     if (!msg) return false;
-    const restoreText = entry.originalText || `<Lenitxt>${entry.content}</Lenitxt>`;
+    const zoneList = normalizeZones(zones);
+    const zone = zoneList.find(z => z.id === getEntryZoneId(entry, zoneList)) || zoneList[0];
+    const restoreText = entry.originalText || `<${zone.tag}>${entry.content}</${zone.tag}>`;
     msg.mes = msg.mes + '\n' + restoreText;
     entry.sourceDeleted = true;
     saveMemories(vaultId, list);
     return true;
 }
 
-// ─── 批量还原所有有来源的记忆到聊天 ──────────────────────────────────────
+// ─── 批量还原所有有来源的记忆到聊天（返回还原数量与受影响楼层列表） ──────
 
 export function restoreAllToChat(vaultId) {
     const ctx = SillyTavern.getContext();
     const list = loadMemories(vaultId);
     const toRestore = list
         .filter(e => !e.sourceDeleted && e.linkedMessageId !== null && e.linkedMessageId !== undefined && e.originalText)
-        .sort((a, b) => a.linkedMessageId - b.linkedMessageId || (a.originalBlockIndex ?? 0) - (b.originalBlockIndex ?? 0));
-    if (!toRestore.length) return 0;
-    let restoredCount = 0;
+        .sort(compareByFloor);
+    if (!toRestore.length) return { count: 0, mesids: [] };
+    const mesidSet = new Set();
+    let count = 0;
     for (const entry of toRestore) {
         const msg = ctx.chat?.[entry.linkedMessageId];
         if (!msg) continue;
         msg.mes = msg.mes + '\n' + entry.originalText;
         entry.sourceDeleted = true;
-        restoredCount++;
+        mesidSet.add(entry.linkedMessageId);
+        count++;
     }
-    if (restoredCount > 0) saveMemories(vaultId, list);
-    return restoredCount;
+    if (count > 0) saveMemories(vaultId, list);
+    return { count, mesids: [...mesidSet] };
 }
 
-// ─── 将超出当前聊天长度的记忆标记为 sourceDeleted（适配 ST 1.19+ MESSAGE_DELETED(chat.length)）
+// ─── 截断删楼标记遗弃 ─────────────────────────────────────────────────────
 
 export function markOutOfRangeDeleted(vaultId, currentChatLength) {
     if (!vaultId || typeof currentChatLength !== 'number' || currentChatLength < 0) return false;
@@ -568,50 +624,12 @@ export function markOutOfRangeDeleted(vaultId, currentChatLength) {
     return changed;
 }
 
-export function markSourceDeleted(vaultId, mesid) {
-    const list = loadMemories(vaultId);
-    let changed = false;
-    for (const entry of list) {
-        if (entry.linkedMessageId === mesid && !entry.sourceDeleted) {
-            entry.sourceDeleted = true;
-            changed = true;
-        }
-    }
-    if (changed) saveMemories(vaultId, list);
-    return changed;
-}
-
-// ─── 按楼层排序插入多条记忆 ───────────────────────────────────────────────
-
-export function insertMemoriesSorted(vaultId, newEntries) {
-    const list = loadMemories(vaultId);
-    for (const entry of [...newEntries].sort((a, b) => (a.linkedMessageId ?? Infinity) - (b.linkedMessageId ?? Infinity))) {
-        let insertPos = list.length;
-        for (let i = list.length - 1; i >= 0; i--) {
-            if (list[i].linkedMessageId !== null && list[i].linkedMessageId !== undefined &&
-                list[i].linkedMessageId <= entry.linkedMessageId) {
-                insertPos = i + 1;
-                break;
-            }
-        }
-        if (insertPos === list.length && list.length > 0) {
-            insertPos = list.findIndex(e => e.linkedMessageId !== null && e.linkedMessageId !== undefined && e.linkedMessageId > entry.linkedMessageId);
-            if (insertPos === -1) insertPos = list.length;
-        }
-        list.splice(insertPos, 0, entry);
-    }
-    saveMemories(vaultId, list);
-    return newEntries.length;
-}
-
-// ─── 清空遗弃区块 ─────────────────────────────────────────────────────────
-
 export function clearAbandoned(vaultId) {
     const list = loadMemories(vaultId);
     saveMemories(vaultId, list.filter(e => !e.sourceDeleted));
 }
 
-// ─── 置顶操作 ─────────────────────────────────────────────────────────────
+// ─── 置顶操作（默认按楼层排序，拖拽或微调时规范化 pinnedOrder） ───────────
 
 export function pinMemory(vaultId, id, order) {
     updateMemory(vaultId, id, { pinned: true, pinnedOrder: order ?? null });
@@ -625,65 +643,98 @@ export function getPinnedSorted(list) {
     return list.filter(e => e.pinned && !e.sourceDeleted).sort((a, b) => {
         const oa = a.pinnedOrder;
         const ob = b.pinnedOrder;
-        if (oa == null && ob == null) return 0;
-        if (oa == null) return -1;
-        if (ob == null) return 1;
-        return oa - ob;
+        if (oa != null && ob != null && oa !== ob) return oa - ob;
+        if (oa != null && ob == null) return -1;
+        if (oa == null && ob != null) return 1;
+        // 两者都未手动设定序号时，默认按楼层顺序排列
+        return compareByFloor(a, b);
     });
 }
 
+/**
+ * 未置顶的有效记忆：统一按楼层顺序排列（linkedMessageId 升序，无楼层排末尾）
+ */
 export function getRecentUnpinned(list) {
-    return list.filter(e => !e.pinned && !e.sourceDeleted)
-        .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    return list.filter(e => !e.pinned && !e.sourceDeleted).sort(compareByFloor);
 }
 
 export function getAbandoned(list) {
-    return list.filter(e => e.sourceDeleted);
+    return list.filter(e => e.sourceDeleted).sort(compareByFloor);
 }
 
-// ─── pinnedOrder 调整工具 ─────────────────────────────────────────────────
+/**
+ * 将当前置顶列表的 pinnedOrder 规范化为 0, 1, 2, ...（保证 ↑/↓ 与拖拽始终有效）
+ */
+function normalizePinnedOrdersInList(list) {
+    const ordered = getPinnedSorted(list);
+    ordered.forEach((item, idx) => {
+        item.pinnedOrder = idx;
+    });
+    return ordered;
+}
+
+/**
+ * 按拖拽后的 ID 顺序重新设定置顶序号（支持按子集重排，例如在某个分区内拖拽）
+ */
+export function reorderPinned(vaultId, draggedId, targetId, insertBefore = true) {
+    if (!vaultId || !draggedId || !targetId || draggedId === targetId) return false;
+    const list = loadMemories(vaultId);
+    const ordered = normalizePinnedOrdersInList(list);
+    const fromIdx = ordered.findIndex(e => e.id === draggedId);
+    const toIdx   = ordered.findIndex(e => e.id === targetId);
+    if (fromIdx === -1 || toIdx === -1) return false;
+
+    const [moved] = ordered.splice(fromIdx, 1);
+    const newTargetIdx = ordered.findIndex(e => e.id === targetId);
+    const insertIdx = insertBefore ? newTargetIdx : newTargetIdx + 1;
+    ordered.splice(insertIdx, 0, moved);
+
+    ordered.forEach((item, idx) => {
+        item.pinnedOrder = idx;
+    });
+    saveMemories(vaultId, list);
+    return true;
+}
 
 export function movePinnedTop(vaultId, id) {
     const list = loadMemories(vaultId);
-    const pinned = getPinnedSorted(list);
-    const minOrder = pinned.length ? Math.min(...pinned.map(e => e.pinnedOrder ?? 0)) : 0;
-    updateMemory(vaultId, id, { pinnedOrder: minOrder - 1 });
+    const ordered = normalizePinnedOrdersInList(list);
+    const idx = ordered.findIndex(e => e.id === id);
+    if (idx <= 0) return;
+    const [moved] = ordered.splice(idx, 1);
+    ordered.unshift(moved);
+    ordered.forEach((item, i) => { item.pinnedOrder = i; });
+    saveMemories(vaultId, list);
 }
 
 export function movePinnedBottom(vaultId, id) {
     const list = loadMemories(vaultId);
-    const pinned = getPinnedSorted(list);
-    const maxOrder = pinned.length ? Math.max(...pinned.map(e => e.pinnedOrder ?? 0)) : 0;
-    updateMemory(vaultId, id, { pinnedOrder: maxOrder + 1 });
+    const ordered = normalizePinnedOrdersInList(list);
+    const idx = ordered.findIndex(e => e.id === id);
+    if (idx === -1 || idx >= ordered.length - 1) return;
+    const [moved] = ordered.splice(idx, 1);
+    ordered.push(moved);
+    ordered.forEach((item, i) => { item.pinnedOrder = i; });
+    saveMemories(vaultId, list);
 }
 
 export function movePinnedUp(vaultId, id) {
     const list = loadMemories(vaultId);
-    const pinned = getPinnedSorted(list);
-    const idx = pinned.findIndex(e => e.id === id);
+    const ordered = normalizePinnedOrdersInList(list);
+    const idx = ordered.findIndex(e => e.id === id);
     if (idx <= 0) return;
-    const prev = pinned[idx - 1];
-    const cur  = pinned[idx];
-    const curInList  = list.find(e => e.id === cur.id);
-    const prevInList = list.find(e => e.id === prev.id);
-    const tmp = curInList.pinnedOrder;
-    curInList.pinnedOrder  = prevInList.pinnedOrder;
-    prevInList.pinnedOrder = tmp;
+    [ordered[idx - 1], ordered[idx]] = [ordered[idx], ordered[idx - 1]];
+    ordered.forEach((item, i) => { item.pinnedOrder = i; });
     saveMemories(vaultId, list);
 }
 
 export function movePinnedDown(vaultId, id) {
     const list = loadMemories(vaultId);
-    const pinned = getPinnedSorted(list);
-    const idx = pinned.findIndex(e => e.id === id);
-    if (idx === -1 || idx >= pinned.length - 1) return;
-    const next = pinned[idx + 1];
-    const cur  = pinned[idx];
-    const curInList  = list.find(e => e.id === cur.id);
-    const nextInList = list.find(e => e.id === next.id);
-    const tmp = curInList.pinnedOrder;
-    curInList.pinnedOrder  = nextInList.pinnedOrder;
-    nextInList.pinnedOrder = tmp;
+    const ordered = normalizePinnedOrdersInList(list);
+    const idx = ordered.findIndex(e => e.id === id);
+    if (idx === -1 || idx >= ordered.length - 1) return;
+    [ordered[idx], ordered[idx + 1]] = [ordered[idx + 1], ordered[idx]];
+    ordered.forEach((item, i) => { item.pinnedOrder = i; });
     saveMemories(vaultId, list);
 }
 
@@ -705,7 +756,7 @@ export function copyMemories(fromVaultId, toVaultId) {
     const source = loadMemories(fromVaultId);
     if (!source.length) return 0;
     const existing = loadMemories(toVaultId);
-    if (existing.length) return 0; // 目标已有记忆，不覆盖
+    if (existing.length) return 0;
     const copied = source.map(entry => ({
         ...entry,
         tags: Array.isArray(entry.tags) ? [...entry.tags] : [],

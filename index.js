@@ -5,20 +5,20 @@
  * 设计不变量：
  * 1. 通过 chatMetadata + CHAT_RENAMED 双保险追踪当前聊天的 vaultId：
  *    - 酒馆内重命名聊天时自动无缝沿用原记忆库；
- *    - 创建分支（Branch）时自动复制一份独立记忆库，不串戏；
- *    - 任何时候都可在前端 🗂️ 历史记忆库管理中搜索、预览、重绑或合并历史记忆库。
- * 2. 翻页（MESSAGE_SWIPED）不再自动遗弃记忆；仅在真删除楼层（MESSAGE_DELETED）时，
- *    依据 ST 1.19+ 传入的剩余 chat.length 将超出范围的楼层记忆标记为遗弃。
- * 3. 自动捕获修改消息前必须增量保存 chatSnapshot，确保「恢复聊天快照」可用。
+ *    - 创建分支（Branch）时自动复制一份独立记忆库，不串戏。
+ * 2. 修改聊天楼层正文（自动捕获 / 手动扫描 / 还原 / 恢复聊天快照）后，
+ *    必须调用 refreshChatMessages() 触发 ST 1.19+ updateMessageBlock 实时刷新楼层 DOM。
+ * 3. 多分区捕获：单次扫描可同时捕获 settings.zones 中所有自定义标签块并按分区存储。
  */
 
 import {
     mvWrite, SETTINGS_STORE_KEY,
-    StorageBackend, setBackend, testBackend,
+    StorageBackend, setBackend, testBackend, migrateBackendData,
     exportAll, exportChat, importData,
 } from './src/storage.js';
 
 import {
+    DEFAULT_ZONES, normalizeZones, hasAnyZoneTag,
     resolveActiveVault, loadMemories, saveMemories,
     saveDbSnapshot, saveChatSnapshot, markOutOfRangeDeleted,
     restoreAllToChat, restoreDbSnapshot, getChatSnapshot,
@@ -43,17 +43,18 @@ const DEFAULT_SETTINGS = {
     recentN:              5,
     defaultImportance:    0.5,
     presetTags:           [],
+    zones:                DEFAULT_ZONES.map(z => ({ ...z })),
     autoCapture:          false,
     autoCaptureExcludeN:  6,
     scanExcludeRecentN:   false,
     injectFormat:         'lenitxt',
     autoCleanAfterRestore: false,
-    chatSwitchCopy:       'empty_only', // 'never' | 'empty_only' | 'always'
+    chatSwitchCopy:       'empty_only',
 };
 
 let settings      = { ...DEFAULT_SETTINGS };
 let activeVaultId = null;
-let recentRename  = null; // { oldFileName, newFileName, ts }
+let recentRename  = null;
 
 // ─── 设置持久化 ───────────────────────────────────────────────────────────
 
@@ -70,15 +71,17 @@ function loadSettings() {
         } catch {}
     }
     if (saved) settings = { ...DEFAULT_SETTINGS, ...saved };
+    settings.zones = normalizeZones(settings.zones);
     setBackend(settings.backend);
 }
 
 function savePluginSettings() {
+    settings.zones = normalizeZones(settings.zones);
     mvWrite(SETTINGS_STORE_KEY, settings);
     setUiSettings(settings);
 }
 
-// ─── saveChat 工具（兼容 ST 1.19+） ───────────────────────────────────────
+// ─── saveChat & 实时刷新楼层 DOM（ST 1.19+ updateMessageBlock） ──────────
 
 function doSaveChat() {
     try {
@@ -95,6 +98,19 @@ function doSaveChat() {
     }
 }
 
+function refreshChatMessages(mesids) {
+    try {
+        const ctx = SillyTavern.getContext();
+        if (!ctx?.chat || typeof ctx.updateMessageBlock !== 'function') return;
+        const unique = [...new Set(mesids)].filter(id => typeof id === 'number' && !isNaN(id) && id >= 0 && ctx.chat[id]);
+        for (const id of unique) {
+            ctx.updateMessageBlock(id, ctx.chat[id], { rerenderMessage: true });
+        }
+    } catch (e) {
+        console.warn('[MemoryVault] refreshChatMessages error:', e);
+    }
+}
+
 // ─── 聊天切换 / 改名 / 分支处理 ───────────────────────────────────────────
 
 let _chatChangeTimer = null;
@@ -104,7 +120,6 @@ function handleChatChanged() {
     const resolved = resolveActiveVault(recentRename);
     const newVaultId = resolved.vaultId;
 
-    // 消费已匹配的近期改名记录
     if (resolved.action === 'renamed') {
         recentRename = null;
     }
@@ -127,7 +142,6 @@ function handleChatChanged() {
         && newVaultId !== oldVaultId
         && settings.chatSwitchCopy !== 'never'
     ) {
-        // 仅在普通切换到全新空白聊天时，按用户设置询问是否复制旧聊天记忆
         const srcMemories = loadMemories(oldVaultId);
         const dstMemories = loadMemories(newVaultId);
         const shouldPrompt = settings.chatSwitchCopy === 'always'
@@ -155,7 +169,7 @@ function scheduleChatChanged(delayMs = 300) {
     }, delayMs);
 }
 
-// ─── 自动扫描新消息 ───────────────────────────────────────────────────────
+// ─── 自动扫描新消息（支持多分区 + 实时刷新 DOM） ──────────────────────────
 
 function handleNewMessage() {
     if (!settings.enabled || !activeVaultId) return;
@@ -165,26 +179,27 @@ function handleNewMessage() {
         const chat = ctx?.chat;
         if (!chat?.length) return;
 
+        const zones = normalizeZones(settings.zones);
         const existing = loadMemories(activeVaultId);
         const threshold = chat.length - settings.autoCaptureExcludeN;
         let totalNew = 0;
         const chatSnap = {};
+        const changedMesIds = [];
 
         for (let i = 0; i < threshold; i++) {
             const msg = chat[i];
             if (!msg?.mes) continue;
-            if (!/<Lenitxt>/i.test(msg.mes)) continue;
+            if (!hasAnyZoneTag(msg.mes, zones)) continue;
 
             const originalMes = msg.mes;
             const { newEntries, modifiedText } = scanAndStoreMessage(
-                activeVaultId, i, originalMes, existing, settings.defaultImportance
+                activeVaultId, i, originalMes, existing, settings.defaultImportance, zones
             );
             if (!newEntries.length) continue;
 
             if (totalNew === 0) saveDbSnapshot(activeVaultId);
             chatSnap[i] = originalMes;
 
-            // 按楼层顺序插入内存数组（最后统一 saveMemories）
             for (const entry of newEntries) {
                 let insertPos = existing.length;
                 for (let j = existing.length - 1; j >= 0; j--) {
@@ -199,12 +214,14 @@ function handleNewMessage() {
                 existing.splice(insertPos, 0, entry);
             }
             msg.mes = modifiedText;
+            changedMesIds.push(i);
             totalNew += newEntries.length;
         }
 
         if (totalNew > 0) {
             saveMemories(activeVaultId, existing);
             saveChatSnapshot(activeVaultId, chatSnap, true);
+            refreshChatMessages(changedMesIds);
             doSaveChat();
             updateInjection(activeVaultId, settings);
             onNewMemoriesAdded(totalNew);
@@ -260,7 +277,6 @@ function registerEvents() {
             scheduleChatChanged(300);
         });
 
-        // 监听 ST 1.19+ 原生聊天重命名事件，确保改名时无缝沿用原记忆库
         if (types.CHAT_RENAMED) {
             es.on(types.CHAT_RENAMED, (data) => {
                 if (data?.oldFileName && data?.newFileName) {
@@ -269,13 +285,10 @@ function registerEvents() {
                         newFileName: String(data.newFileName),
                         ts: Date.now(),
                     };
-                    // 立即重新调度以尽快应用改名绑定
                     scheduleChatChanged(150);
                 }
             });
         }
-
-        // 注意：按设计决定，不再监听 MESSAGE_SWIPED 自动遗弃记忆，避免翻页误丢记忆
 
         installed = true;
         console.log('[MemoryVault] ✅ 事件钩子已注册');
@@ -306,8 +319,26 @@ function bindSettingsPanel() {
         settings.backend = jQuery(this).val();
         setBackend(settings.backend);
         savePluginSettings();
-        // 切换存储后端后重新解析当前聊天记忆库
         handleChatChanged();
+    });
+
+    // 一键从另一存储后端迁移数据到当前后端
+    doc.on('click', '#mv-migrate-backend-btn', () => {
+        const toBackend = settings.backend;
+        const fromBackend = toBackend === StorageBackend.EXT ? StorageBackend.LOCAL : StorageBackend.EXT;
+        const fromLabel = fromBackend === StorageBackend.EXT ? '后端保存(ST数据)' : '浏览器保存(localStorage)';
+        const toLabel   = toBackend === StorageBackend.EXT ? '后端保存(ST数据)' : '浏览器保存(localStorage)';
+        if (!confirm(`确定将「${fromLabel}」中的所有记忆库合并迁移到当前的「${toLabel}」吗？\n（会自动按 ID 去重，不会覆盖现有数据，原后端数据也会保留）`)) {
+            return;
+        }
+        const { vaultCount, entryCount } = migrateBackendData(fromBackend, toBackend);
+        if (entryCount === 0) {
+            alert(`未在「${fromLabel}」中发现需要新增迁移的记忆数据。`);
+        } else {
+            if (activeVaultId && settings.enabled) updateInjection(activeVaultId, settings);
+            renderAll();
+            alert(`✅ 迁移完成！共合并迁移 ${vaultCount} 个聊天库、新增 ${entryCount} 条记忆到「${toLabel}」。`);
+        }
     });
 
     doc.on('change', '#mv-set-position', function() {
@@ -341,7 +372,6 @@ function bindSettingsPanel() {
         savePluginSettings();
     });
 
-    // 测试存储后端
     doc.on('click', '#mv-test-ext', async () => {
         const ok = await testBackend(StorageBackend.EXT);
         jQuery('#mv-test-ext-result').text(ok ? '✅ 可用' : '❌ 不可用');
@@ -351,7 +381,6 @@ function bindSettingsPanel() {
         jQuery('#mv-test-local-result').text(ok ? '✅ 可用' : '❌ 不可用');
     });
 
-    // 预设标签
     doc.on('click', '#mv-preset-tag-add', () => {
         const val = jQuery('#mv-preset-tag-input').val().trim();
         if (!val) return;
@@ -368,7 +397,6 @@ function bindSettingsPanel() {
         syncSettings(settings);
     });
 
-    // 导出
     doc.on('click', '#mv-export-all', () => {
         const data = exportAll();
         downloadJson(data, 'memory-vault-all.json');
@@ -378,7 +406,6 @@ function bindSettingsPanel() {
         downloadJson(exportChat(activeVaultId), `memory-vault-${activeVaultId}.json`);
     });
 
-    // 导入
     doc.on('click', '#mv-import-btn', () => jQuery('#mv-import-file').click());
     doc.on('change', '#mv-import-file', function() {
         const file = this.files?.[0];
@@ -420,18 +447,19 @@ function bindSettingsPanel() {
         this.value = '';
     });
 
-    // 一键还原
+    // 一键还原（带实时刷新 DOM）
     doc.on('click', '#mv-restore-all-btn', () => {
         if (!activeVaultId) return;
         if (!confirm('将所有有来源的记忆还原到对应楼层末尾？')) return;
-        const count = restoreAllToChat(activeVaultId);
+        const { count, mesids } = restoreAllToChat(activeVaultId);
+        refreshChatMessages(mesids);
         doSaveChat();
         updateInjection(activeVaultId, settings);
         renderAll();
-        alert(`✅ 已还原 ${count} 条记忆到来源楼层，这些记忆已移至遗弃区备份。\n如不需要可在遗弃区全选删除。`);
+        alert(`✅ 已还原 ${count} 条记忆到来源楼层并实时刷新显示，这些记忆已移至遗弃区备份。\n如不需要可在遗弃区全选删除。`);
     });
 
-    // 聊天快照恢复
+    // 聊天快照恢复（带实时刷新 DOM）
     doc.on('click', '#mv-restore-chat-snap-btn', () => {
         if (!activeVaultId) return;
         const snap = getChatSnapshot(activeVaultId);
@@ -439,16 +467,21 @@ function bindSettingsPanel() {
         if (!confirm('⚠️ 将被修改的消息恢复到提取前的状态？')) return;
         try {
             const ctx = SillyTavern.getContext();
+            const restoredIds = [];
             for (const [mesid, text] of Object.entries(snap)) {
-                const msg = ctx?.chat?.[parseInt(mesid, 10)];
-                if (msg) msg.mes = text;
+                const idx = parseInt(mesid, 10);
+                const msg = ctx?.chat?.[idx];
+                if (msg) {
+                    msg.mes = text;
+                    restoredIds.push(idx);
+                }
             }
+            refreshChatMessages(restoredIds);
             doSaveChat();
-            alert('✅ 聊天快照已恢复');
+            alert(`✅ 聊天快照已恢复（已实时刷新 ${restoredIds.length} 个楼层）`);
         } catch (e) { alert('❌ 恢复失败: ' + e.message); }
     });
 
-    // 记忆库快照恢复
     doc.on('click', '#mv-restore-db-snap-btn', () => {
         if (!activeVaultId) return;
         if (!confirm('⚠️ 将记忆库恢复到最近一次写库前的状态？')) return;
@@ -462,10 +495,8 @@ function bindSettingsPanel() {
         }
     });
 
-    // 手动扫描
     doc.on('click', '#mv-scan-chat-btn', openScanModal);
 
-    // 自动捕获
     doc.on('change', '#mv-set-auto-capture', function() {
         settings.autoCapture = this.checked;
         savePluginSettings();
@@ -505,7 +536,7 @@ function downloadJson(data, filename) {
     URL.revokeObjectURL(url);
 }
 
-// ─── 菜单按钮（ST 1.18 / 1.19+ 标准方式） ────────────────────────────────
+// ─── 菜单按钮 ─────────────────────────────────────────────────────────────
 
 function addMenuButton() {
     if (jQuery('#mv-menu-btn').length) return;
@@ -536,7 +567,7 @@ function addMenuButton() {
         }
 
         initPanel();
-        setUiHelpers(scanAndStoreMessage, doSaveChat);
+        setUiHelpers(scanAndStoreMessage, doSaveChat, refreshChatMessages);
         setUiSettings(settings);
         setUiSaveCallback(savePluginSettings);
         setUiVaultBoundCallback((newVaultId) => {
@@ -556,7 +587,7 @@ function addMenuButton() {
             if (activeVaultId && settings.enabled) updateInjection(activeVaultId, settings);
             syncSettings(settings);
             renderAll();
-            console.log('[MemoryVault] ✅ v1.1.0 已加载，vaultId:', activeVaultId);
+            console.log('[MemoryVault] ✅ v1.2.0 已加载，vaultId:', activeVaultId);
         }, 800);
     }, 500);
 })();

@@ -143,7 +143,7 @@ export function removeVaultMeta(vaultId) {
     }
 }
 
-// ─── 枚举所有历史记忆库（供前端「历史记忆库管理 / 重新绑定」使用） ────────
+// ─── 枚举所有历史记忆库 ──────────────────────────────────────────────────
 
 function getRawStoreEntries(backend) {
     const entries = {};
@@ -177,7 +177,56 @@ function getRawStoreEntries(backend) {
 }
 
 /**
- * 列出当前存储后端下的所有历史记忆库（包含空库以外的所有库，也包含当前正在使用的库）
+ * 在 EXT 与 LOCAL 两个存储后端之间一键迁移所有记忆库与元数据（合并去重，不覆盖已有数据）
+ */
+export function migrateBackendData(fromBackend, toBackend) {
+    if (!fromBackend || !toBackend || fromBackend === toBackend) {
+        return { vaultCount: 0, entryCount: 0 };
+    }
+    const srcEntries = getRawStoreEntries(fromBackend);
+    const readTarget  = (k) => (toBackend === StorageBackend.EXT ? extRead(k) : localRead(k));
+    const writeTarget = (k, v) => (toBackend === StorageBackend.EXT ? extWrite(k, v) : localWrite(k, v));
+    const readSrc     = (k) => (fromBackend === StorageBackend.EXT ? extRead(k) : localRead(k));
+
+    let vaultCount = 0;
+    let entryCount = 0;
+
+    for (const [k, srcList] of Object.entries(srcEntries)) {
+        if (!Array.isArray(srcList) || !srcList.length) continue;
+        const dstList = readTarget(k);
+        const merged = Array.isArray(dstList) ? [...dstList] : [];
+        const ids = new Set(merged.map(e => e.id));
+        let addedHere = 0;
+        for (const item of srcList) {
+            if (!ids.has(item.id)) {
+                merged.push(item);
+                ids.add(item.id);
+                addedHere++;
+            }
+        }
+        if (addedHere > 0) {
+            writeTarget(k, merged);
+            vaultCount++;
+            entryCount += addedHere;
+        }
+    }
+
+    // 同步合并 vault_meta
+    const srcMeta = readSrc(VAULT_META_KEY);
+    if (srcMeta && typeof srcMeta === 'object' && !Array.isArray(srcMeta)) {
+        const dstMeta = readTarget(VAULT_META_KEY);
+        const mergedMeta = {
+            ...srcMeta,
+            ...(dstMeta && typeof dstMeta === 'object' && !Array.isArray(dstMeta) ? dstMeta : {}),
+        };
+        writeTarget(VAULT_META_KEY, mergedMeta);
+    }
+
+    return { vaultCount, entryCount };
+}
+
+/**
+ * 列出当前存储后端下的所有历史记忆库
  */
 export function listAllVaults(activeVaultId = null) {
     const entries = getRawStoreEntries(_backend);
@@ -250,7 +299,6 @@ export function exportAll() {
         for (const [k, v] of Object.entries(store)) {
             if (isMemoryChatKey(k) && Array.isArray(v)) dump[k] = v;
         }
-        // 兜底：localStorage 里的也一起导出
         for (let i = 0; i < localStorage.length; i++) {
             const raw = localStorage.key(i);
             if (raw && raw.startsWith('mv_')) {
@@ -278,7 +326,6 @@ export function importData(dump, mode) {
         return { success: false, error: '导入数据格式错误：不是有效的 JSON 对象' };
     }
 
-    // 严格过滤出记忆数组 key，自动跳过旧版全量导出中误混入的 chat_snapshot_*
     const chatKeys = Object.keys(dump).filter(k => isMemoryChatKey(k));
     if (!chatKeys.length) {
         return { success: false, error: '导入数据中未找到任何聊天记忆（需要 chat_ 开头的记忆数组）' };

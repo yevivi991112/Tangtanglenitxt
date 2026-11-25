@@ -1,21 +1,23 @@
 /**
- * ui.js — 浮动面板：主视图 + 内置设置视图（⚙️切换）+ 历史记忆库管理 + 注入预览弹窗
+ * ui.js — 浮动面板：多分区切换 + 主视图 + 置顶拖拽排序 + 标签点击筛选 + 内置设置视图 + 历史记忆库管理 + 注入预览弹窗
  *
  * 设计不变量：
  * 1. 所有设置控件集中在浮动面板内，避免与外部 settings.html 产生 DOM ID 冲突。
- * 2. 「全选当前页」仅作用于当前所在 Tab 的可见条目，防止误删其他分区（记忆库/遗弃区）的数据。
- * 3. 编辑楼层序号重新插入时，必须完整保留原条目的 pinned / pinnedOrder / sourceDeleted 状态。
+ * 2. 「全选当前页」仅作用于当前所在 Tab 与当前分区的可见条目，防止误删其他分区的数据。
+ * 3. 编辑楼层序号重新插入时，必须完整保留原条目的 pinned / pinnedOrder / sourceDeleted / zoneId 状态。
  * 4. 新增记忆采用临时编辑表单，仅点击「保存」时写入数据库，点「取消」不会残留空白记录。
- * 5. 置顶区块与记忆库区块均支持折叠收起；「置顶排序」控件仅在置顶 Tab 显示。
+ * 5. 置顶区块支持鼠标与手机触摸拖动排序，同时保留展开后的序号输入与 ↑/↓ 微调。
+ * 6. 修改聊天原文（扫描入库 / 还原）后通过 _mvRefreshMsgs 立即刷新酒馆楼层 DOM。
  */
 
 import {
     loadMemories, saveMemories, addMemory, addMemoryAtFloor, updateMemory, deleteMemory, deleteMemories,
     mergeMemories, getPinnedSorted, getRecentUnpinned, getAbandoned,
     pinMemory, unpinMemory, clearAbandoned, restoreOneToChat,
-    movePinnedTop, movePinnedBottom, movePinnedUp, movePinnedDown,
+    movePinnedTop, movePinnedBottom, movePinnedUp, movePinnedDown, reorderPinned,
     saveDbSnapshot, saveChatSnapshot, isBlockAlreadyStored,
     getCurrentChatId, bindCurrentChatToVault, mergeVaultInto,
+    normalizeZones, getEntryZoneId, extractBlocksForZones,
 } from './memory.js';
 import { listAllVaults, deleteVault } from './storage.js';
 import { updateInjection, buildPromptText, resolvePosition } from './inject.js';
@@ -35,12 +37,15 @@ export function setUiVaultBoundCallback(fn)  { _onVaultBound = fn; }
 
 function esc(t) { return $('<div>').text(t || '').html(); }
 function triggerSave() { if (_onSave) _onSave(); }
+function getZones() { return normalizeZones(_settings.zones); }
 
 // ─── 状态 ─────────────────────────────────────────────────────────────────
 let _selectedIds     = new Set();
 let _expandedIds     = new Set();
 let _pinnedSort      = 'order';
 let _searchQuery     = '';
+let _activeTagFilter = null;
+let _activeZone      = 'all'; // 'all' | zone.id
 let _view            = 'main'; // 'main' | 'settings'
 let _activeTab       = 'pinned'; // 'pinned' | 'recent' | 'abandoned'
 let _pinnedCollapsed = false;
@@ -48,6 +53,7 @@ let _vaultCollapsed  = true;
 let _highlightIds    = new Set();
 let _vaultSearch     = '';
 let _previewVaultId  = null;
+let _draggingId      = null;
 
 // ─── HTML ─────────────────────────────────────────────────────────────────
 const PANEL_HTML = `
@@ -71,6 +77,9 @@ const PANEL_HTML = `
       <button class="mv-tbtn mv-banner-btn" id="mv-quick-enable-btn">立即开启</button>
     </div>
 
+    <!-- 多分区快速切换栏（仅配置 >=2 个分区时显示） -->
+    <div id="mv-zone-bar" class="mv-zone-bar" style="display:none;"></div>
+
     <!-- Tab 切换栏 -->
     <div class="mv-tab-bar">
       <button class="mv-tab mv-tab-active" data-tab="pinned" id="mv-tab-pinned">📌置顶</button>
@@ -81,7 +90,7 @@ const PANEL_HTML = `
     <div class="mv-toolbar">
       <label class="mv-label" id="mv-pin-sort-wrap" style="margin-left:0;">置顶排序:
         <select id="mv-pin-sort" class="mv-select">
-          <option value="order">自定义序号</option>
+          <option value="order">拖动/序号(默认楼层)</option>
           <option value="time_asc">时间↑</option>
           <option value="time_desc">时间↓</option>
           <option value="imp_desc">重要度↓</option>
@@ -93,6 +102,12 @@ const PANEL_HTML = `
         <button class="mv-search-clear" id="mv-search-clear" title="清空搜索" style="display:none;">×</button>
       </div>
       <button class="mv-tbtn" id="mv-add-btn">＋新增</button>
+    </div>
+
+    <!-- 当前标签筛选条 -->
+    <div id="mv-tag-filter-bar" class="mv-tag-filter-bar" style="display:none;">
+      <span>🏷️ 标签筛选：<b id="mv-tag-filter-name"></b></span>
+      <button class="mv-tbtn mv-tag-filter-clear" id="mv-tag-filter-clear">× 清除</button>
     </div>
 
     <div class="mv-multibar" id="mv-multibar" style="display:none;">
@@ -127,17 +142,27 @@ const PANEL_HTML = `
     </div>
 
     <div class="mv-set-section">
+      <div class="mv-set-title">分区与捕获标签（可同时捕获多个代码块并分区管理）</div>
+      <div id="mv-zones-editor" class="mv-zones-editor"></div>
+      <button class="mv-tbtn" id="mv-zone-add-btn" style="width:100%;margin-top:6px;">＋ 新增分区（如大总结 / Summary）</button>
+      <div style="font-size:11px;color:#8B7355;margin-top:4px;">
+        标签名不带尖括号（例如填 Lenitxt 匹配 &lt;Lenitxt&gt;...&lt;/Lenitxt&gt;）。配置 2 个及以上分区时，主界面顶部会自动出现快捷切换条。
+      </div>
+    </div>
+
+    <div class="mv-set-section">
       <div class="mv-set-title">存储方案</div>
       <select id="mv-set-backend" class="mv-select" style="width:100%;margin-bottom:6px;">
         <option value="ext">后端保存（推荐，跟随ST数据）</option>
         <option value="local">浏览器保存（备选，清缓存丢失）</option>
       </select>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px;">
         <button class="mv-tbtn" id="mv-test-ext">测试①</button>
         <span id="mv-test-ext-result" class="mv-test-result"></span>
         <button class="mv-tbtn" id="mv-test-local">测试②</button>
         <span id="mv-test-local-result" class="mv-test-result"></span>
       </div>
+      <button class="mv-tbtn" id="mv-migrate-backend-btn" style="width:100%;">🔄 从另一存储后端一键迁移数据到当前后端</button>
     </div>
 
     <div class="mv-set-section">
@@ -158,14 +183,14 @@ const PANEL_HTML = `
         <label class="mv-set-label">最近N条:
           <input type="number" id="mv-set-recent-n" class="mv-num-input" min="0" max="999">
         </label>
-        <span style="font-size:11px;color:#8B7355;">(0=全发)</span>
+        <span style="font-size:11px;color:#8B7355;">(0=全发，按楼层排序)</span>
       </div>
       <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
         <label class="mv-set-label">注入格式:</label>
         <select id="mv-set-inject-format" class="mv-select" style="flex:1;">
-          <option value="lenitxt">带 &lt;Lenitxt&gt; 标签</option>
+          <option value="lenitxt">带分区标签（如 &lt;Lenitxt&gt;）</option>
           <option value="plain">纯文本（日期|标签|内容）</option>
-          <option value="lenitxt_single">整合记忆（仅一次 Lenitxt 包裹）</option>
+          <option value="lenitxt_single">整合记忆（每分区仅包裹一次）</option>
         </select>
       </div>
     </div>
@@ -201,7 +226,7 @@ const PANEL_HTML = `
       <div class="mv-set-title">操作工具</div>
       <div style="display:flex;flex-direction:column;gap:6px;">
         <button class="mv-tbtn" id="mv-open-vaults-btn" style="width:100%;">🗂️ 历史记忆库管理 / 重新绑定</button>
-        <button class="mv-tbtn" id="mv-scan-chat-btn" style="width:100%;">🔍 手动扫描 &lt;Lenitxt&gt; 块</button>
+        <button class="mv-tbtn" id="mv-scan-chat-btn" style="width:100%;">🔍 手动扫描聊天中的分区标签块</button>
         <button class="mv-tbtn" id="mv-restore-all-btn" style="width:100%;">↩ 一键还原所有记忆到来源楼层</button>
         <button class="mv-tbtn mv-danger-btn" id="mv-restore-chat-snap-btn" style="width:100%;">⚠️ 恢复聊天快照</button>
         <button class="mv-tbtn mv-danger-btn" id="mv-restore-db-snap-btn" style="width:100%;">⚠️ 恢复记忆库快照</button>
@@ -239,7 +264,7 @@ const PANEL_HTML = `
         <input type="checkbox" id="mv-set-auto-capture"> 启用自动捕获记忆
       </label>
       <div style="font-size:11px;color:#B71C1C;margin-bottom:6px;">
-        ⚠️ 开启后，超出 N 楼的消息中 &lt;Lenitxt&gt; 块将被自动入库并从聊天记录中删除
+        ⚠️ 开启后，超出 N 楼的消息中已配置分区的标签块将被自动入库并从聊天记录中删除
       </div>
       <div style="display:flex;align-items:center;gap:6px;">
         <label class="mv-set-label">最近N楼不捕获:</label>
@@ -294,7 +319,7 @@ const PANEL_HTML = `
 <!-- 扫描弹窗（保留 DOM 兼容） -->
 <div id="mv-scan-modal" class="mv-modal">
   <div class="mv-modal-box">
-    <div class="mv-modal-title">🔍 扫描聊天中的 &lt;Lenitxt&gt; 块</div>
+    <div class="mv-modal-title">🔍 扫描聊天中的分区标签块</div>
     <div id="mv-scan-list" class="mv-scan-list"></div>
     <div class="mv-modal-actions">
       <button class="mv-btn mv-btn-cancel" id="mv-scan-cancel">取消</button>
@@ -311,7 +336,11 @@ export function initPanel() {
     bindPanelEvents();
 }
 
-export function showPanel() { $('#mv-panel').addClass('mv-active'); renderAll(); }
+export function showPanel() {
+    $('#extensionsMenu').hide();
+    $('#mv-panel').css({ left: '', right: '', top: '', transform: '' }).addClass('mv-active');
+    renderAll();
+}
 export function hidePanel() { $('#mv-panel').removeClass('mv-active'); }
 export function togglePanel() {
     if ($('#mv-panel').hasClass('mv-active')) hidePanel(); else showPanel();
@@ -325,6 +354,7 @@ function switchView(v) {
         $('#mv-main-view').hide();
         $('#mv-settings-view').show();
         $('#mv-settings-btn').text('◀');
+        renderZonesEditor();
     } else {
         $('#mv-settings-view').hide();
         $('#mv-main-view').show();
@@ -333,7 +363,64 @@ function switchView(v) {
     }
 }
 
-// ─── 预设标签选择器组件（用于新增/编辑框） ────────────────────────────────
+// ─── 设置页：分区与捕获标签编辑器 ─────────────────────────────────────────
+function renderZonesEditor() {
+    const zones = getZones();
+    _settings.zones = zones;
+    const $box = $('#mv-zones-editor').empty();
+
+    zones.forEach((z, idx) => {
+        const canDelete = zones.length > 1;
+        const $row = $(`
+          <div class="mv-zone-row" data-idx="${idx}">
+            <div class="mv-zone-row-top">
+              <input type="text" class="mv-input mv-zone-name" placeholder="分区名（如记忆/大总结）" value="${esc(z.name)}">
+              <input type="text" class="mv-input mv-zone-tag" placeholder="标签名（如Lenitxt）" value="${esc(z.tag)}">
+              ${canDelete ? '<button type="button" class="mv-tbtn mv-danger-btn mv-zone-del" title="删除分区">×</button>' : ''}
+            </div>
+            <label class="mv-set-label" style="margin-top:4px;font-size:11px;">
+              <input type="checkbox" class="mv-zone-defpin" ${z.defaultPinned ? 'checked' : ''}> 捕获到该分区时默认置顶
+            </label>
+          </div>
+        `);
+
+        $row.find('.mv-zone-name').on('change', function() {
+            const val = $(this).val().trim();
+            if (!val) { $(this).val(z.name); return; }
+            _settings.zones[idx].name = val;
+            triggerSave();
+            if (_vaultId && _settings.enabled) updateInjection(_vaultId, _settings);
+        });
+
+        $row.find('.mv-zone-tag').on('change', function() {
+            const val = $(this).val().trim().replace(/[<>\/]/g, '');
+            if (!val) { $(this).val(z.tag); return; }
+            $(this).val(val);
+            _settings.zones[idx].tag = val;
+            triggerSave();
+            if (_vaultId && _settings.enabled) updateInjection(_vaultId, _settings);
+        });
+
+        $row.find('.mv-zone-defpin').on('change', function() {
+            _settings.zones[idx].defaultPinned = this.checked;
+            triggerSave();
+        });
+
+        $row.find('.mv-zone-del').on('click', () => {
+            if (!confirm(`确定删除分区「${z.name}」吗？\n（该分区内已有记忆不会丢失，会自动归入第一个分区）`)) return;
+            const removedId = _settings.zones[idx].id;
+            _settings.zones.splice(idx, 1);
+            if (_activeZone === removedId) _activeZone = 'all';
+            triggerSave();
+            renderZonesEditor();
+            if (_vaultId && _settings.enabled) updateInjection(_vaultId, _settings);
+        });
+
+        $box.append($row);
+    });
+}
+
+// ─── 预设标签选择器组件 ───────────────────────────────────────────────────
 function buildPresetTagsPicker($tagsInput) {
     const presets = _settings.presetTags || [];
     if (!presets.length) return null;
@@ -369,43 +456,77 @@ function buildPresetTagsPicker($tagsInput) {
     return $wrap;
 }
 
-// ─── 获取当前 Tab 展示的条目列表（用于「全选当前页」） ────────────────────
+// ─── 过滤辅助：按分区 + 搜索词 + 点击标签 ─────────────────────────────────
+function filterByZone(rawList) {
+    const zones = getZones();
+    if (_activeZone === 'all' || !zones.some(z => z.id === _activeZone)) {
+        _activeZone = 'all';
+        return rawList;
+    }
+    return rawList.filter(e => getEntryZoneId(e, zones) === _activeZone);
+}
+
 function getCurrentTabVisibleIds() {
     if (!_vaultId) return [];
-    let list = loadMemories(_vaultId);
-    if (_searchQuery.trim()) list = filterMemories(list, _searchQuery, []);
-    if (_activeTab === 'pinned') {
-        return getPinnedSorted(list).map(e => e.id);
-    }
+    let list = filterByZone(loadMemories(_vaultId));
+    const tagArr = _activeTagFilter ? [_activeTagFilter] : [];
+    if (_searchQuery.trim() || tagArr.length) list = filterMemories(list, _searchQuery, tagArr);
+
+    if (_activeTab === 'pinned') return getPinnedSorted(list).map(e => e.id);
     if (_activeTab === 'recent') {
         const n = _settings.recentN ?? 5;
         const unpinned = getRecentUnpinned(list);
         const send = n === 0 ? unpinned : unpinned.slice(Math.max(0, unpinned.length - n));
         return send.map(e => e.id);
     }
-    if (_activeTab === 'abandoned') {
-        return getAbandoned(list).map(e => e.id);
-    }
+    if (_activeTab === 'abandoned') return getAbandoned(list).map(e => e.id);
     return [];
 }
 
-// ─── 更新 Tab 角标 & 工具栏状态 ───────────────────────────────────────────
+// ─── 渲染分区切换条 & Tab 角标 & 工具栏状态 ───────────────────────────────
 function syncHeaderAndTabs(rawList) {
-    // 总开关关闭提示条
+    const zones = getZones();
     $('#mv-disabled-banner').toggle(_settings.enabled === false);
-
-    // 置顶排序仅在置顶 Tab 显示
     $('#mv-pin-sort-wrap').toggle(_activeTab === 'pinned');
-
-    // 搜索清空按钮
     $('#mv-search-clear').toggle(_searchQuery.length > 0);
 
-    // Tab 数量角标
-    const pinnedCount = getPinnedSorted(rawList).length;
+    // 标签筛选提示条
+    if (_activeTagFilter) {
+        $('#mv-tag-filter-name').text('#' + _activeTagFilter);
+        $('#mv-tag-filter-bar').show();
+    } else {
+        $('#mv-tag-filter-bar').hide();
+    }
+
+    // 多分区快捷切换条
+    const $zoneBar = $('#mv-zone-bar');
+    if (zones.length > 1) {
+        if (_activeZone !== 'all' && !zones.some(z => z.id === _activeZone)) _activeZone = 'all';
+        const validAll = rawList.filter(e => !e.sourceDeleted);
+        $zoneBar.empty().show();
+
+        const $allPill = $(`<button class="mv-zone-pill${_activeZone === 'all' ? ' mv-zone-pill-active' : ''}">全部(${validAll.length})</button>`);
+        $allPill.on('click', () => { _activeZone = 'all'; renderAll(); });
+        $zoneBar.append($allPill);
+
+        zones.forEach(z => {
+            const cnt = validAll.filter(e => getEntryZoneId(e, zones) === z.id).length;
+            const $pill = $(`<button class="mv-zone-pill${_activeZone === z.id ? ' mv-zone-pill-active' : ''}">${esc(z.name)}(${cnt})</button>`);
+            $pill.on('click', () => { _activeZone = z.id; renderAll(); });
+            $zoneBar.append($pill);
+        });
+    } else {
+        _activeZone = 'all';
+        $zoneBar.hide();
+    }
+
+    // Tab 数量角标（按当前所选分区统计）
+    const zonedList = filterByZone(rawList);
+    const pinnedCount = getPinnedSorted(zonedList).length;
     const n = _settings.recentN ?? 5;
-    const unpinned = getRecentUnpinned(rawList);
+    const unpinned = getRecentUnpinned(zonedList);
     const recentCount = n === 0 ? unpinned.length : Math.min(unpinned.length, n);
-    const abandonedCount = getAbandoned(rawList).length;
+    const abandonedCount = getAbandoned(zonedList).length;
 
     $('#mv-tab-pinned').text(pinnedCount ? `📌置顶(${pinnedCount})` : '📌置顶');
     $('#mv-tab-recent').text(recentCount ? `📋最近(${recentCount})` : '📋最近');
@@ -427,13 +548,14 @@ export function renderAll() {
     const rawList = loadMemories(_vaultId);
     syncHeaderAndTabs(rawList);
 
-    let list = rawList;
-    if (_searchQuery.trim()) list = filterMemories(list, _searchQuery, []);
+    let list = filterByZone(rawList);
+    const tagArr = _activeTagFilter ? [_activeTagFilter] : [];
+    if (_searchQuery.trim() || tagArr.length) list = filterMemories(list, _searchQuery, tagArr);
+
     const scrollPos = $body.scrollTop();
     const tabScrollPos = $body.find('.mv-tab-content').scrollTop() || 0;
     $body.empty();
 
-    // Tab 内容区（上半区）
     const $tabContent = $('<div class="mv-tab-content">');
     if (_activeTab === 'pinned') {
         $tabContent.append(buildPinnedSection(list));
@@ -444,7 +566,6 @@ export function renderAll() {
     }
     $body.append($tabContent);
 
-    // 记忆库区块（始终在 Tab 内容下方，可折叠）
     $body.append(buildVaultSection(list));
 
     syncMultibar();
@@ -452,7 +573,7 @@ export function renderAll() {
     $body.find('.mv-tab-content').scrollTop(tabScrollPos);
 }
 
-// ─── 置顶区块（支持一键收起/展开） ────────────────────────────────────────
+// ─── 置顶区块（支持一键收起/展开 + 鼠标/触摸拖动排序） ────────────────────
 function buildPinnedSection(list) {
     let pinned = getPinnedSorted(list);
     if (_pinnedSort === 'time_asc')  pinned = [...pinned].sort((a,b) => (a.timestamp||0) - (b.timestamp||0));
@@ -463,10 +584,13 @@ function buildPinnedSection(list) {
     const $sec = $('<div class="mv-section">');
     const arrow = _pinnedCollapsed ? '▶' : '▼';
     const toggleLabel = _pinnedCollapsed ? '展开' : '收起';
+    const dragHint = (!_pinnedCollapsed && _pinnedSort === 'order' && pinned.length > 1)
+        ? '<span class="mv-drag-tip">可按住 ⋮⋮ 拖动排序</span>' : '';
     const $title = $(`
       <div class="mv-sec-title mv-sec-collapsible" title="点击收起或展开置顶区块">
         <span class="mv-vault-arrow">${arrow}</span>
         <span>📌 置顶区块 (${pinned.length})</span>
+        ${dragHint}
         <span class="mv-toggle-arrow">${toggleLabel}</span>
       </div>
     `);
@@ -478,31 +602,38 @@ function buildPinnedSection(list) {
 
     if (!_pinnedCollapsed) {
         if (!pinned.length) {
-            const hint = _searchQuery.trim()
-                ? `未找到包含「${esc(_searchQuery.trim())}」的置顶记忆`
+            const hint = (_searchQuery.trim() || _activeTagFilter)
+                ? '未找到匹配的置顶记忆'
                 : '无置顶记忆';
             $sec.append(`<div class="mv-empty-hint">${hint}</div>`);
         } else {
-            pinned.forEach((e, i) => $sec.append(buildItem(e, { showPinOrder: true, isFirst: i===0, isLast: i===pinned.length-1, section:'pinned' })));
+            const allowDrag = _pinnedSort === 'order' && pinned.length > 1;
+            pinned.forEach((e, i) => $sec.append(buildItem(e, {
+                showPinOrder: true,
+                allowDrag,
+                isFirst: i === 0,
+                isLast: i === pinned.length - 1,
+                section: 'pinned',
+            })));
         }
     }
     return $sec;
 }
 
-// ─── 最近N条区块 ──────────────────────────────────────────────────────────
+// ─── 最近N条区块（按楼层排序） ────────────────────────────────────────────
 function buildRecentSection(list) {
     const n        = _settings.recentN ?? 5;
     const unpinned = getRecentUnpinned(list);
     const send     = n === 0 ? unpinned : unpinned.slice(Math.max(0, unpinned.length - n));
 
     const $sec = $('<div class="mv-section">');
-    $sec.append(`<div class="mv-sec-title">📋 最近记忆 (${send.length})</div>`);
+    $sec.append(`<div class="mv-sec-title">📋 最近记忆 (${send.length})<span class="mv-toggle-arrow">按楼层排序</span></div>`);
 
     send.forEach(e => $sec.append(buildItem(e, { section:'recent' })));
 
     if (!unpinned.length) {
-        const hint = _searchQuery.trim()
-            ? `未找到包含「${esc(_searchQuery.trim())}」的记忆（点搜索框右侧 × 清空）`
+        const hint = (_searchQuery.trim() || _activeTagFilter)
+            ? '未找到匹配的记忆（可清除搜索或标签筛选）'
             : '无记忆，可手动新增、扫描聊天，或点右上角 🗂️ 找回历史记忆库';
         $sec.append(`<div class="mv-empty-hint">${hint}</div>`);
     }
@@ -555,14 +686,14 @@ function buildAbandonedSection(list) {
     return $sec;
 }
 
-// ─── 记忆库区块（所有非遗弃记忆，减去最近N条展示的） ─────────────────────
+// ─── 记忆库区块（未置顶且不在最近 N 条里的记忆） ──────────────────────────
 function buildVaultSection(list) {
     const n        = _settings.recentN ?? 5;
     const unpinned = getRecentUnpinned(list);
     const recentSend = n === 0 ? unpinned : unpinned.slice(Math.max(0, unpinned.length - n));
     const recentSendIds = new Set(recentSend.map(e => e.id));
 
-    const vaultItems = list.filter(e => !e.sourceDeleted && !e.pinned && !recentSendIds.has(e.id));
+    const vaultItems = unpinned.filter(e => !recentSendIds.has(e.id));
 
     const $sec = $('<div class="mv-vault-section">');
     const arrow = _vaultCollapsed ? '▶' : '▼';
@@ -583,20 +714,132 @@ function buildVaultSection(list) {
     return $sec;
 }
 
+// ─── 绑定置顶拖拽（PC 鼠标 + 手机触摸） ───────────────────────────────────
+function bindPinnedDragEvents($item, entry) {
+    $item.attr('draggable', 'true').attr('data-pinned-drag', '1');
+
+    // PC HTML5 Drag & Drop
+    $item.on('dragstart', function(e) {
+        _draggingId = entry.id;
+        $(this).addClass('mv-dragging');
+        if (e.originalEvent?.dataTransfer) {
+            e.originalEvent.dataTransfer.effectAllowed = 'move';
+            e.originalEvent.dataTransfer.setData('text/plain', entry.id);
+        }
+    });
+
+    $item.on('dragover', function(e) {
+        if (!_draggingId || _draggingId === entry.id) return;
+        e.preventDefault();
+        const rect = this.getBoundingClientRect();
+        const isTop = (e.originalEvent.clientY - rect.top) < rect.height / 2;
+        $('.mv-item').removeClass('mv-drag-over-top mv-drag-over-bottom');
+        $(this).addClass(isTop ? 'mv-drag-over-top' : 'mv-drag-over-bottom');
+    });
+
+    $item.on('dragleave', function() {
+        $(this).removeClass('mv-drag-over-top mv-drag-over-bottom');
+    });
+
+    $item.on('drop', function(e) {
+        e.preventDefault();
+        if (!_draggingId || _draggingId === entry.id) return;
+        const rect = this.getBoundingClientRect();
+        const insertBefore = (e.originalEvent.clientY - rect.top) < rect.height / 2;
+        const dragged = _draggingId;
+        _draggingId = null;
+        $('.mv-item').removeClass('mv-dragging mv-drag-over-top mv-drag-over-bottom');
+        if (reorderPinned(_vaultId, dragged, entry.id, insertBefore)) {
+            triggerSave();
+            updateInjection(_vaultId, _settings);
+            renderAll();
+            setStatus('✅ 已调整置顶顺序');
+        }
+    });
+
+    $item.on('dragend', function() {
+        _draggingId = null;
+        $('.mv-item').removeClass('mv-dragging mv-drag-over-top mv-drag-over-bottom');
+    });
+
+    // 手机端触摸拖拽（仅按住 ⋮⋮ 手柄触发，不影响正常滑动滚动）
+    let touchTargetId = null;
+    let touchInsertBefore = true;
+    const $handle = $item.find('.mv-drag-handle');
+
+    $handle.on('touchstart', function(e) {
+        e.stopPropagation();
+        _draggingId = entry.id;
+        touchTargetId = null;
+        $item.addClass('mv-dragging');
+    });
+
+    $handle.on('touchmove', function(e) {
+        if (!_draggingId) return;
+        e.preventDefault();
+        const touch = e.originalEvent.touches?.[0];
+        if (!touch) return;
+        const el = document.elementFromPoint(touch.clientX, touch.clientY);
+        const $target = el ? $(el).closest('.mv-item[data-pinned-drag="1"]') : $();
+        $('.mv-item').removeClass('mv-drag-over-top mv-drag-over-bottom');
+        if ($target.length && $target.data('id') !== _draggingId) {
+            const rect = $target[0].getBoundingClientRect();
+            touchInsertBefore = (touch.clientY - rect.top) < rect.height / 2;
+            touchTargetId = String($target.data('id'));
+            $target.addClass(touchInsertBefore ? 'mv-drag-over-top' : 'mv-drag-over-bottom');
+        } else {
+            touchTargetId = null;
+        }
+    });
+
+    $handle.on('touchend touchcancel', function() {
+        const dragged = _draggingId;
+        const target = touchTargetId;
+        _draggingId = null;
+        touchTargetId = null;
+        $('.mv-item').removeClass('mv-dragging mv-drag-over-top mv-drag-over-bottom');
+        if (dragged && target && dragged !== target) {
+            if (reorderPinned(_vaultId, dragged, target, touchInsertBefore)) {
+                triggerSave();
+                updateInjection(_vaultId, _settings);
+                renderAll();
+                setStatus('✅ 已调整置顶顺序');
+            }
+        }
+    });
+}
+
 // ─── 单条记忆 ─────────────────────────────────────────────────────────────
 function buildItem(entry, opts={}) {
-    const { muted=false, showPinOrder=false, isFirst=false, isLast=false, section } = opts;
+    const { muted=false, showPinOrder=false, allowDrag=false, isFirst=false, isLast=false, section } = opts;
     const expanded   = _expandedIds.has(entry.id);
     const isSelected = _selectedIds.has(entry.id);
+    const zones      = getZones();
 
     const highlighted = _highlightIds.has(entry.id);
     const $item = $(`<div class="mv-item${muted?' mv-muted':''}${entry.pinned?' mv-pinned':''}${highlighted?' mv-highlight':''}" data-id="${esc(entry.id)}">`);
-    const tagsHtml = (entry.tags||[]).map(t=>`<span class="mv-tag">#${esc(t)}</span>`).join(' ');
+
+    // 全部视图下配置了多分区时显示分区小徽章
+    let zoneBadgeHtml = '';
+    if (zones.length > 1 && _activeZone === 'all') {
+        const zId = getEntryZoneId(entry, zones);
+        const zObj = zones.find(z => z.id === zId);
+        if (zObj) zoneBadgeHtml = `<span class="mv-zone-badge">${esc(zObj.name)}</span>`;
+    }
+
+    const tagsHtml = (entry.tags||[]).map(t => {
+        const activeCls = _activeTagFilter === t ? ' mv-tag-active' : '';
+        return `<span class="mv-tag mv-tag-clickable${activeCls}" data-tag="${esc(t)}" title="点击按此标签筛选">#${esc(t)}</span>`;
+    }).join(' ');
+
+    const dragHandleHtml = allowDrag ? '<span class="mv-drag-handle" title="按住上下拖动排序">⋮⋮</span>' : '';
 
     $item.append(`
       <div class="mv-item-top">
+        ${dragHandleHtml}
         <input type="checkbox" class="mv-checkbox" data-id="${esc(entry.id)}" ${isSelected?'checked':''}>
         <span class="mv-floor">#${entry.linkedMessageId !== null && entry.linkedMessageId !== undefined ? entry.linkedMessageId + 1 : '—'}</span>
+        ${zoneBadgeHtml}
         <span class="mv-date">${esc(entry.date)}</span>
         <span class="mv-tags">${tagsHtml}</span>
         <span class="mv-imp">${(entry.importance||0).toFixed(1)}</span>
@@ -612,7 +855,7 @@ function buildItem(entry, opts={}) {
             const $ord = $(`
               <div class="mv-order-row">
                 <label style="font-size:11px;color:#8B7355;">序号:</label>
-                <input type="number" class="mv-num-input mv-pin-order-input" value="${entry.pinnedOrder ?? ''}" placeholder="留空排最前" data-id="${esc(entry.id)}">
+                <input type="number" class="mv-num-input mv-pin-order-input" value="${entry.pinnedOrder ?? ''}" placeholder="默认楼层" data-id="${esc(entry.id)}">
                 <button class="mv-obtn mv-pin-top-btn" data-id="${esc(entry.id)}" title="置顶">⬆</button>
                 <button class="mv-obtn mv-pin-bottom-btn" data-id="${esc(entry.id)}" title="置底">⬇</button>
                 <button class="mv-obtn mv-pin-up-btn" data-id="${esc(entry.id)}" ${isFirst?'disabled':''}>↑</button>
@@ -640,6 +883,19 @@ function buildItem(entry, opts={}) {
         `);
         $item.append($act);
     }
+
+    if (allowDrag) bindPinnedDragEvents($item, entry);
+
+    // 点击标签胶囊直接筛选
+    $item.find('.mv-tag-clickable').on('click', function(e) {
+        e.stopPropagation();
+        const tag = String($(this).data('tag') || '');
+        if (!tag) return;
+        _activeTagFilter = (_activeTagFilter === tag) ? null : tag;
+        renderAll();
+    });
+
+    $item.find('.mv-drag-handle').on('click', e => e.stopPropagation());
 
     $item.find('.mv-item-top').on('click', () => {
         _expandedIds.has(entry.id) ? _expandedIds.delete(entry.id) : _expandedIds.add(entry.id);
@@ -682,13 +938,14 @@ function buildItem(entry, opts={}) {
     });
     $item.find('.mv-btn-restore').on('click', () => {
         if (!confirm('还原此记忆的原始块到来源楼层末尾？')) return;
-        const ok = restoreOneToChat(_vaultId, entry.id);
+        const ok = restoreOneToChat(_vaultId, entry.id, getZones());
         if (ok) {
             if (_settings.autoCleanAfterRestore) {
                 deleteMemory(_vaultId, entry.id);
             }
+            _mvRefreshMsgs([entry.linkedMessageId]);
             _mvSaveChat();
-            triggerSave(); updateInjection(_vaultId, _settings); renderAll(); setStatus('✅ 已还原');
+            triggerSave(); updateInjection(_vaultId, _settings); renderAll(); setStatus('✅ 已还原并刷新楼层');
         }
         else setStatus('⚠️ 还原失败（来源楼层不存在）');
     });
@@ -718,6 +975,17 @@ function openEditInline(entry) {
     $item.find('.mv-content-full, .mv-actions, .mv-order-row').hide();
     if ($item.find('.mv-edit-box').length) return;
 
+    const zones = getZones();
+    const curZoneId = getEntryZoneId(entry, zones);
+    const zoneSelectHtml = zones.length > 1
+        ? `<div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+             <label style="font-size:11px;color:#5D4E37;">所属分区:</label>
+             <select class="mv-select mv-edit-zone-select" style="flex:1;">
+               ${zones.map(z => `<option value="${esc(z.id)}" ${z.id === curZoneId ? 'selected' : ''}>${esc(z.name)} (&lt;${esc(z.tag)}&gt;)</option>`).join('')}
+             </select>
+           </div>`
+        : '';
+
     const currentFloor = entry.linkedMessageId !== null && entry.linkedMessageId !== undefined
         ? String(entry.linkedMessageId + 1) : '';
 
@@ -737,6 +1005,7 @@ function openEditInline(entry) {
           <input type="number" class="mv-num-input mv-edit-floor-input" min="1" step="1" placeholder="留空=末尾" value="${esc(currentFloor)}" style="width:80px;">
           <span style="font-size:11px;color:#8B7355;">（留空则排在末尾）</span>
         </div>
+        ${zoneSelectHtml}
         <div class="mv-modal-actions">
           <button class="mv-btn mv-btn-cancel">取消</button>
           <button class="mv-btn mv-btn-primary">保存</button>
@@ -756,6 +1025,7 @@ function openEditInline(entry) {
         const date     = $box.find('input[type=date]').val() || entry.date;
         const floorVal = $box.find('.mv-edit-floor-input').val().trim();
         const newLinkedId = floorVal === '' ? null : (parseInt(floorVal, 10) - 1);
+        const newZoneId = zones.length > 1 ? ($box.find('.mv-edit-zone-select').val() || curZoneId) : curZoneId;
 
         const floorChanged = newLinkedId !== entry.linkedMessageId;
         if (floorChanged) {
@@ -765,11 +1035,12 @@ function openEditInline(entry) {
             const newEntry = addMemoryAtFloor(_vaultId, {
                 ...entry,
                 content, tags, importance: imp, date,
+                zoneId: newZoneId,
                 linkedMessageId: newLinkedId,
             });
             _expandedIds.add(newEntry.id);
         } else {
-            updateMemory(_vaultId, entry.id, { content, tags, importance: imp, date });
+            updateMemory(_vaultId, entry.id, { content, tags, importance: imp, date, zoneId: newZoneId });
             _expandedIds.add(entry.id);
         }
         triggerSave(); updateInjection(_vaultId, _settings); renderAll(); setStatus('✅ 已保存');
@@ -784,8 +1055,20 @@ function addInlineNewEntry() {
         return;
     }
 
+    const zones = getZones();
+    const defaultZone = (_activeZone !== 'all' && zones.find(z => z.id === _activeZone)) || zones[0];
     const today = new Date().toISOString().slice(0, 10);
     const defImp = _settings.defaultImportance ?? 0.5;
+    const defaultPinChecked = _activeTab === 'pinned' || Boolean(defaultZone.defaultPinned);
+
+    const zoneSelectHtml = zones.length > 1
+        ? `<div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+             <label style="font-size:11px;color:#5D4E37;">所属分区:</label>
+             <select class="mv-select mv-new-zone" style="flex:1;">
+               ${zones.map(z => `<option value="${esc(z.id)}" ${z.id === defaultZone.id ? 'selected' : ''}>${esc(z.name)} (&lt;${esc(z.tag)}&gt;)</option>`).join('')}
+             </select>
+           </div>`
+        : '';
 
     const $card = $(`
       <div id="mv-new-entry-card" class="mv-item mv-new-entry-card">
@@ -804,9 +1087,10 @@ function addInlineNewEntry() {
             <label style="font-size:11px;color:#5D4E37;">楼层序号:</label>
             <input type="number" class="mv-num-input mv-new-floor" min="1" step="1" placeholder="留空=末尾" style="width:80px;">
             <label class="mv-set-label" style="margin-left:auto;">
-              <input type="checkbox" class="mv-new-pinned" ${_activeTab === 'pinned' ? 'checked' : ''}> 直接置顶
+              <input type="checkbox" class="mv-new-pinned" ${defaultPinChecked ? 'checked' : ''}> 直接置顶
             </label>
           </div>
+          ${zoneSelectHtml}
           <div class="mv-modal-actions">
             <button class="mv-btn mv-btn-cancel">取消</button>
             <button class="mv-btn mv-btn-primary">保存</button>
@@ -818,6 +1102,11 @@ function addInlineNewEntry() {
     const $picker = buildPresetTagsPicker($card.find('.mv-edit-tags-input'));
     if ($picker) $card.find('.mv-preset-picker-slot').append($picker);
 
+    $card.find('.mv-new-zone').on('change', function() {
+        const z = zones.find(item => item.id === $(this).val());
+        if (z) $card.find('.mv-new-pinned').prop('checked', Boolean(z.defaultPinned) || _activeTab === 'pinned');
+    });
+
     $card.find('.mv-btn-cancel').on('click', () => $card.remove());
     $card.find('.mv-btn-primary').on('click', () => {
         const content = $card.find('textarea').val().trim();
@@ -828,8 +1117,9 @@ function addInlineNewEntry() {
         const floorVal = $card.find('.mv-new-floor').val().trim();
         const linkedMessageId = floorVal === '' ? null : (parseInt(floorVal, 10) - 1);
         const pinned = $card.find('.mv-new-pinned').prop('checked');
+        const zoneId = zones.length > 1 ? ($card.find('.mv-new-zone').val() || defaultZone.id) : defaultZone.id;
 
-        const fields = { content, tags, importance: imp, date, linkedMessageId, pinned, source: 'manual' };
+        const fields = { content, tags, importance: imp, date, linkedMessageId, pinned, zoneId, source: 'manual' };
         const entry = linkedMessageId !== null ? addMemoryAtFloor(_vaultId, fields) : addMemory(_vaultId, fields);
         _expandedIds.add(entry.id);
         _highlightIds.add(entry.id);
@@ -1028,11 +1318,32 @@ function bindPanelEvents() {
     $('#mv-preview-inject-btn').on('click', openInjectPreviewModal);
     $('#mv-vaults-btn, #mv-open-vaults-btn').on('click', openVaultsModal);
 
-    // 停用横幅快捷开启（复用 #mv-set-enabled 的 change 逻辑）
+    // 新增分区
+    $('#mv-zone-add-btn').on('click', () => {
+        const zones = getZones();
+        const isSecond = zones.length === 1;
+        zones.push({
+            id: 'zone_' + Date.now().toString(36),
+            name: isSecond ? '大总结' : `分区${zones.length + 1}`,
+            tag: isSecond ? 'Summary' : `Mem${zones.length + 1}`,
+            defaultPinned: isSecond,
+        });
+        _settings.zones = zones;
+        triggerSave();
+        renderZonesEditor();
+    });
+
+    // 停用横幅快捷开启
     $('#mv-quick-enable-btn').on('click', () => {
         $('#mv-set-enabled').prop('checked', true).trigger('change');
         renderAll();
         setStatus('✅ 已开启记忆注入');
+    });
+
+    // 清除标签筛选
+    $('#mv-tag-filter-clear').on('click', () => {
+        _activeTagFilter = null;
+        renderAll();
     });
 
     // 弹窗关闭 & 点击半透明遮罩层关闭
@@ -1074,7 +1385,6 @@ function bindPanelEvents() {
     });
     $('#mv-add-btn').on('click', addInlineNewEntry);
 
-    // 仅全选当前 Tab 可见条目
     $('#mv-sel-all').on('click', () => {
         getCurrentTabVisibleIds().forEach(id => _selectedIds.add(id));
         renderAll();
@@ -1082,7 +1392,6 @@ function bindPanelEvents() {
     });
     $('#mv-sel-none').on('click', () => { _selectedIds.clear(); renderAll(); syncMultibar(); });
 
-    // 批量置顶 / 取消置顶
     $('#mv-batch-pin-btn').on('click', () => {
         if (!_vaultId || !_selectedIds.size) return;
         const list = loadMemories(_vaultId);
@@ -1123,7 +1432,6 @@ function bindPanelEvents() {
         triggerSave(); updateInjection(_vaultId, _settings); renderAll(); setStatus('✅ 已批量删除');
     });
 
-    // 合并弹窗
     $('#mv-merge-cancel').on('click', () => $('#mv-merge-modal').removeClass('mv-modal-active'));
     $('#mv-merge-confirm').on('click', () => {
         const content = $('#mv-merge-content').val().trim();
@@ -1142,11 +1450,9 @@ function bindPanelEvents() {
         setStatus('✅ 合并完成');
     });
 
-    // 扫描弹窗
     $('#mv-scan-cancel').on('click', () => $('#mv-scan-modal').removeClass('mv-modal-active'));
     $('#mv-scan-confirm').on('click', commitScanImport);
 
-    // 翻页按钮
     $('#mv-pgup').on('click', () => {
         const $body = $('#mv-body');
         $body.scrollTop($body.scrollTop() - $body.height() * 0.8);
@@ -1156,7 +1462,6 @@ function bindPanelEvents() {
         $body.scrollTop($body.scrollTop() + $body.height() * 0.8);
     });
 
-    // 设置视图储存应用
     $(document).on('click', '#mv-save-settings-btn', () => {
         triggerSave();
         setStatus('✅ 设置已储存');
@@ -1166,7 +1471,7 @@ function bindPanelEvents() {
 function openMergeModal() {
     const list = loadMemories(_vaultId);
     const selected = list.filter(e => _selectedIds.has(e.id));
-    selected.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    selected.sort((a, b) => (a.linkedMessageId ?? Infinity) - (b.linkedMessageId ?? Infinity));
     const lines = [];
     let lastDate = null;
     for (const e of selected) {
@@ -1183,7 +1488,7 @@ function openMergeModal() {
     $('#mv-merge-modal').addClass('mv-modal-active');
 }
 
-// ─── 手动扫描 ─────────────────────────────────────────────────────────────
+// ─── 手动扫描（支持同时扫描所有配置分区） ─────────────────────────────────
 export function openScanModal() {
     try {
         if (!_vaultId) { setStatus('⚠️ 当前无聊天'); return; }
@@ -1191,6 +1496,7 @@ export function openScanModal() {
         const chat = ctx?.chat;
         if (!chat?.length) { setStatus('⚠️ 无聊天数据'); return; }
 
+        const zones = getZones();
         const existing = loadMemories(_vaultId);
         const excludeThreshold = _settings.scanExcludeRecentN
             ? chat.length - (_settings.autoCaptureExcludeN ?? 0)
@@ -1198,28 +1504,26 @@ export function openScanModal() {
         const newBlocks = [];
         chat.forEach((msg, mi) => {
             if (mi >= excludeThreshold) return;
-            const re = /<Lenitxt>([\s\S]*?)<\/Lenitxt>/gi;
-            let m, bi = 0;
-            while ((m = re.exec(msg.mes || '')) !== null) {
-                const already = isBlockAlreadyStored(existing, mi, { originalText: m[0] });
-                if (!already) {
-                    newBlocks.push({ mi, bi, content: m[1].trim(), full: m[0], start: m.index });
+            const blocks = extractBlocksForZones(msg.mes || '', zones);
+            for (const b of blocks) {
+                if (!isBlockAlreadyStored(existing, mi, b)) {
+                    newBlocks.push({ mi, content: b.innerText, full: b.originalText, zoneName: b.zoneName });
                 }
-                bi++;
             }
         });
 
-        if (!newBlocks.length) { setStatus('未找到新的 <Lenitxt> 块'); return; }
+        const tagSummary = zones.map(z => `<${z.tag}>`).join(' / ');
+        if (!newBlocks.length) { setStatus(`未找到新的 ${tagSummary} 块`); return; }
 
         const floors    = newBlocks.map(b => b.mi + 1);
         const minFloor  = Math.min(...floors);
         const maxFloor  = Math.max(...floors);
         const count     = newBlocks.length;
 
-        if (!confirm(`捕获到第${minFloor}楼到第${maxFloor}楼的${count}个Lenitxt块，是否导入？`)) return;
+        if (!confirm(`捕获到第${minFloor}楼到第${maxFloor}楼共 ${count} 个标签块（${tagSummary}），是否导入？`)) return;
 
         const added = doImportBlocks(newBlocks);
-        setStatus(`✅ 导入 ${added} 条`);
+        setStatus(`✅ 导入 ${added} 条并已刷新楼层`);
     } catch(e) { setStatus('⚠️ 扫描失败: '+e.message); }
 }
 
@@ -1228,6 +1532,7 @@ function doImportBlocks(blocksToImport) {
     const chat  = ctx?.chat;
     if (!chat || !_vaultId) return 0;
 
+    const zones     = getZones();
     const existing  = loadMemories(_vaultId);
     saveDbSnapshot(_vaultId);
     const chatSnap  = {};
@@ -1235,6 +1540,7 @@ function doImportBlocks(blocksToImport) {
     blocksToImport.forEach(b => { (byMsg[b.mi] = byMsg[b.mi]||[]).push(b); });
 
     let added = 0;
+    const changedMesIds = [];
     const allEntries = [...existing];
 
     for (const miStr of Object.keys(byMsg)) {
@@ -1242,7 +1548,7 @@ function doImportBlocks(blocksToImport) {
         const msg = chat[mi];
         if (!msg) continue;
         const originalMes = msg.mes;
-        const { newEntries, modifiedText } = _mvScanAndStore(_vaultId, mi, originalMes, allEntries, _settings.defaultImportance ?? 0.5);
+        const { newEntries, modifiedText } = _mvScanAndStore(_vaultId, mi, originalMes, allEntries, _settings.defaultImportance ?? 0.5, zones);
         if (!newEntries.length) continue;
 
         chatSnap[mi] = originalMes;
@@ -1260,12 +1566,14 @@ function doImportBlocks(blocksToImport) {
             allEntries.splice(insertPos, 0, entry);
         }
         msg.mes = modifiedText;
+        changedMesIds.push(mi);
         added += newEntries.length;
     }
 
     if (added > 0) {
         saveMemories(_vaultId, allEntries);
         saveChatSnapshot(_vaultId, chatSnap, true);
+        _mvRefreshMsgs(changedMesIds);
         _mvSaveChat();
         triggerSave();
         renderAll();
@@ -1286,12 +1594,14 @@ function commitScanImport() {
     setStatus(`✅ 导入 ${added} 条`);
 }
 
-// 注入回调供扫描和还原使用（index.js 设置）
+// 注入回调（index.js 设置）
 let _mvScanAndStore = null;
 let _mvSaveChat     = () => {};
-export function setUiHelpers(scanFn, saveChatFn) {
+let _mvRefreshMsgs  = () => {};
+export function setUiHelpers(scanFn, saveChatFn, refreshMsgsFn = () => {}) {
     _mvScanAndStore = scanFn;
     _mvSaveChat     = saveChatFn;
+    _mvRefreshMsgs  = refreshMsgsFn;
 }
 
 // ─── 外部调用 ─────────────────────────────────────────────────────────────
@@ -1301,7 +1611,7 @@ export function onNewMemoriesAdded(count) {
 }
 
 export function onChatChanged(statusMsg = '') {
-    _selectedIds.clear(); _expandedIds.clear();
+    _selectedIds.clear(); _expandedIds.clear(); _activeTagFilter = null;
     if ($('#mv-panel').hasClass('mv-active') && _view === 'main') renderAll();
     if (statusMsg) setStatus(statusMsg);
 }
@@ -1325,4 +1635,5 @@ export function syncSettings(s) {
     (s.presetTags||[]).forEach((tag,i) => {
         $box.append(`<span class="mv-preset-tag">#${esc(tag)} <button class="mv-preset-tag-del" data-idx="${i}">×</button></span>`);
     });
+    renderZonesEditor();
 }
