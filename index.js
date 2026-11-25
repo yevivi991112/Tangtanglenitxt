@@ -42,6 +42,7 @@ const DEFAULT_SETTINGS = {
     pinnedFirst:          true,
     recentN:              5,
     defaultImportance:    0.5,
+    previewLines:         2,
     presetTags:           [],
     zones:                DEFAULT_ZONES.map(z => ({ ...z })),
     autoCapture:          false,
@@ -365,6 +366,15 @@ function bindSettingsPanel() {
     doc.on('change input', '#mv-set-def-imp', function() {
         const v = parseFloat(jQuery(this).val());
         if (!isNaN(v)) { settings.defaultImportance = Math.min(1, Math.max(0, v)); savePluginSettings(); }
+    });
+
+    doc.on('change input', '#mv-set-preview-lines', function() {
+        const n = parseInt(jQuery(this).val(), 10);
+        if (!isNaN(n) && n >= 1 && n <= 10) {
+            settings.previewLines = n;
+            savePluginSettings();
+            renderAll();
+        }
     });
 
     doc.on('change', '#mv-set-auto-clean-restore', function() {

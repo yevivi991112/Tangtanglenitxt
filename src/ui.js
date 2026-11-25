@@ -134,11 +134,29 @@ const PANEL_HTML = `
   <!-- 设置视图 -->
   <div id="mv-settings-view" class="mv-settings-view" style="display:none;">
 
-    <div class="mv-set-section">
+    <div class="mv-set-top-bar">
+      <span style="font-size:11px;color:#8B7355;">点击各区块标题可折叠 / 展开</span>
+      <div style="display:flex;gap:4px;">
+        <button type="button" class="mv-tbtn mv-set-mini-btn" id="mv-set-expand-all">全部展开</button>
+        <button type="button" class="mv-tbtn mv-set-mini-btn" id="mv-set-collapse-all">全部收起</button>
+      </div>
+    </div>
+
+    <div class="mv-set-section mv-set-always-open">
       <div class="mv-set-title">总开关</div>
       <label class="mv-set-label">
         <input type="checkbox" id="mv-set-enabled"> 启用糖🍬的记忆管理
       </label>
+    </div>
+
+    <div class="mv-set-section">
+      <div class="mv-set-title">显示设置</div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+        <label class="mv-set-label">折叠态正文预览行数:
+          <input type="number" id="mv-set-preview-lines" class="mv-num-input" min="1" max="10" step="1" value="2">
+        </label>
+        <span style="font-size:11px;color:#8B7355;">行（1~10，底部楼层/日期/标签固定占 1 行）</span>
+      </div>
     </div>
 
     <div class="mv-set-section">
@@ -330,9 +348,38 @@ const PANEL_HTML = `
 `;
 
 // ─── 初始化 ───────────────────────────────────────────────────────────────
+function initCollapsibleSettings() {
+    $('#mv-settings-view .mv-set-section').not('.mv-set-always-open').each(function() {
+        const $sec = $(this);
+        const $title = $sec.children('.mv-set-title').first();
+        if (!$title.length || $sec.children('.mv-set-body').length) return;
+        const $content = $title.nextAll();
+        const $body = $('<div class="mv-set-body"></div>').append($content);
+        $sec.append($body);
+        $title.addClass('mv-set-title-toggle').prepend('<span class="mv-set-arrow">▶</span>');
+        $sec.addClass('mv-set-collapsed');
+        $title.on('click', () => {
+            const collapsed = $sec.toggleClass('mv-set-collapsed').hasClass('mv-set-collapsed');
+            $title.find('.mv-set-arrow').text(collapsed ? '▶' : '▼');
+        });
+    });
+
+    $('#mv-set-expand-all').on('click', () => {
+        $('#mv-settings-view .mv-set-section').not('.mv-set-always-open').each(function() {
+            $(this).removeClass('mv-set-collapsed').find('.mv-set-arrow').text('▼');
+        });
+    });
+    $('#mv-set-collapse-all').on('click', () => {
+        $('#mv-settings-view .mv-set-section').not('.mv-set-always-open').each(function() {
+            $(this).addClass('mv-set-collapsed').find('.mv-set-arrow').text('▶');
+        });
+    });
+}
+
 export function initPanel() {
     if ($('#mv-panel').length) return;
     $('body').append(PANEL_HTML);
+    initCollapsibleSettings();
     bindPanelEvents();
 }
 
@@ -842,7 +889,7 @@ function buildItem(entry, opts={}) {
           <input type="checkbox" class="mv-checkbox" data-id="${esc(entry.id)}" ${isSelected?'checked':''}>
           ${expanded
             ? `<div class="mv-content-full mv-content-inline">${esc(entry.content)}</div>`
-            : `<div class="mv-preview-2line">${esc(previewText || '（无内容）')}</div>`
+            : `<div class="mv-preview-2line" style="-webkit-line-clamp:${Math.min(10, Math.max(1, parseInt(_settings.previewLines, 10) || 2))};">${esc(previewText || '（无内容）')}</div>`
           }
           <button class="mv-expand-arrow" data-id="${esc(entry.id)}">${expanded?'▲':'▼'}</button>
         </div>
@@ -1632,6 +1679,7 @@ export function syncSettings(s) {
     $('#mv-set-pinned-first').prop('checked', s.pinnedFirst);
     $('#mv-set-recent-n').val(s.recentN);
     $('#mv-set-def-imp').val(s.defaultImportance);
+    $('#mv-set-preview-lines').val(s.previewLines ?? 2);
     $('#mv-set-inject-format').val(s.injectFormat || 'lenitxt');
     $('#mv-set-scan-exclude-recent-n').prop('checked', s.scanExcludeRecentN);
     $('#mv-set-auto-capture').prop('checked', s.autoCapture);
